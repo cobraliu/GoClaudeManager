@@ -28,7 +28,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 # Toolchain (China-friendly defaults; override by exporting before calling).
-export PATH="$PATH:/home/sgf/go/bin"
+# Make the Go toolchain reachable from non-login shells without hardcoding a
+# user's home — override GO_BIN_DIR if your Go lives elsewhere.
+GO_BIN_DIR="${GO_BIN_DIR:-$HOME/go/bin}"
+[[ -d "$GO_BIN_DIR" ]] && export PATH="$PATH:$GO_BIN_DIR"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-off}"
 export GOPATH="${GOPATH:-$HOME/.gopath-gocm}"
@@ -40,7 +43,9 @@ PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-19098}"
 PROXY_UPSTREAM="${PROXY_UPSTREAM:-http://127.0.0.1:8138}"
 
-LEGACY_DB="$ROOT/../ClaudeManager/data/data.db"
+# One-time migration seed from the legacy Python install. Override LEGACY_DB to
+# point elsewhere, or set it empty to disable seeding entirely.
+LEGACY_DB="${LEGACY_DB-$ROOT/../ClaudeManager/data/data.db}"
 DB="$ROOT/data/data.db"
 LOG_DIR="$ROOT/run"
 mkdir -p "$LOG_DIR" bin data

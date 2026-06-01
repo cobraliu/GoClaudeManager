@@ -17,7 +17,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 # Toolchain (China-friendly defaults; override by exporting before calling).
-export PATH="$PATH:/home/sgf/go/bin"
+# Make the Go toolchain reachable from non-login shells without hardcoding a
+# user's home — override GO_BIN_DIR if your Go lives elsewhere.
+GO_BIN_DIR="${GO_BIN_DIR:-$HOME/go/bin}"
+[[ -d "$GO_BIN_DIR" ]] && export PATH="$PATH:$GO_BIN_DIR"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-off}"
 export GOPATH="${GOPATH:-$HOME/.gopath-gocm}"
