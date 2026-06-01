@@ -111,6 +111,16 @@ assistant content from streaming SSE responses to
 `~/.claude/cached_messages/{session_id}/{ts}.json` so the frontend can preview a
 reply while it is still being generated.
 
+There are two independent "proxy" knobs that are easy to conflate. The **tap
+upstream** — where this proxy forwards to reach the internet — is an ops-level
+startup flag (`--upstream-proxy` / `ANTHROPIC_PROXY_UPSTREAM`, empty = direct);
+the proxy binary reads no database. Separately, the DB/UI **session proxy** (the
+`proxy` config key) is injected into sessions as `http_proxy`/`https_proxy`; in
+`real` mode it is the CLI's direct proxy, and in `tap_upstream` mode it covers
+only the session's non-Anthropic traffic (the tap path uses `NO_PROXY` for
+`127.0.0.1`). The web server surfaces the tap upstream read-only by echoing the
+env it was launched with — never by giving the proxy DB access.
+
 ## Package layout
 
 ```

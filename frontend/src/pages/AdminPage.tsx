@@ -54,6 +54,8 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
   const [proxyInput, setProxyInput] = useState("");
   const [proxyMode, setProxyModeVal] = useState<ProxyMode>("tap_upstream");
   const [proxyModeInput, setProxyModeInput] = useState<ProxyMode>("tap_upstream");
+  // Read-only: the tap proxy's upstream (set at proxy launch, ops-level).
+  const [tapUpstream, setTapUpstream] = useState("");
   const [fvMode, setFvMode] = useState<FileViewerMode>("lines");
   const [fvMaxLines, setFvMaxLines] = useState<number>(3000);
   const [fvMaxBytesMb, setFvMaxBytesMb] = useState<number>(1);
@@ -97,6 +99,7 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
       setProxyInput(c.proxy);
       setProxyModeVal(c.proxy_mode);
       setProxyModeInput(c.proxy_mode);
+      setTapUpstream(c.tap_upstream);
       setFvMode(c.file_viewer_mode);
       setFvModeSaved(c.file_viewer_mode);
       setFvMaxLines(c.file_viewer_max_lines);
@@ -425,26 +428,51 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
             {/* Proxy */}
             <div style={cardStyle}>
               <h3 style={{ marginBottom: 12, fontSize: 15 }}>Proxy Settings</h3>
-              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
-                One upstream proxy address used by all sessions (http_proxy &amp; https_proxy). Leave blank for direct.
-                The <b>type</b> decides whether requests route through our local Anthropic recording proxy first.
+
+              {/* Mode — decides which path requests take */}
+              <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                Mode <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>— 决定请求走哪条路径</span>
+              </label>
+              <select
+                value={proxyModeInput}
+                onChange={(e) => setProxyModeInput(e.target.value as ProxyMode)}
+                style={{ ...inputStyle, width: "100%", cursor: "pointer", marginBottom: 6 }}
+              >
+                <option value="tap_upstream">Tap upstream — 走本地录制代理 (recording ON)</option>
+                <option value="real">Real proxy — 直连，绕过录制 (recording OFF)</option>
+              </select>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 14px" }}>
+                <b>Tap upstream</b>: Claude CLI → 本地 19098 (录制 SSE) → <i>Tap 上游代理</i> → api.anthropic.com<br />
+                <b>Real proxy</b>: Claude CLI → <i>会话代理</i> (HTTPS_PROXY) → api.anthropic.com（绕过 19098，不录制）
               </p>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+
+              {/* Config 1 — Tap upstream (read-only, ops-level) */}
+              <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                Tap 上游代理 <span style={{ fontWeight: 400, color: "var(--text-muted)" }}>(只读)</span>
+              </label>
+              <input
+                value={tapUpstream || "(直连 api.anthropic.com)"}
+                readOnly
+                disabled
+                style={{ ...inputStyle, width: "100%", marginBottom: 4, opacity: 0.7, cursor: "not-allowed" }}
+              />
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "0 0 14px" }}>
+                本地录制代理 (127.0.0.1:19098) 访问外网的出口，仅 <b>Tap upstream</b> 模式生效。
+                在 proxy 启动时通过 <code>PROXY_UPSTREAM</code> (restart.sh) / <code>--upstream-proxy</code> 设置，
+                留空 = 直连。此处不可编辑（运维级配置）。
+              </p>
+
+              {/* Config 2 — session http_proxy (editable, DB-backed) */}
+              <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 4 }}>
+                会话代理 (http_proxy)
+              </label>
+              <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
                 <input
                   value={proxyInput}
                   onChange={(e) => setProxyInput(e.target.value)}
-                  placeholder="http://proxy:port"
+                  placeholder="http://proxy:port（留空 = 不注入）"
                   style={{ ...inputStyle, flex: 1 }}
                 />
-                <select
-                  value={proxyModeInput}
-                  onChange={(e) => setProxyModeInput(e.target.value as ProxyMode)}
-                  style={{ ...inputStyle, width: 200, cursor: "pointer" }}
-                  title="tap_upstream: tap proxy uses this as its internet hop (recording ON). real: Claude CLI uses this as HTTPS_PROXY directly (recording OFF)."
-                >
-                  <option value="tap_upstream">Type: Tap upstream (recording ON)</option>
-                  <option value="real">Type: Real proxy (recording OFF)</option>
-                </select>
                 <button
                   disabled={proxyInput === proxy && proxyModeInput === proxyMode}
                   onClick={async () => {
@@ -461,8 +489,10 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
                 </button>
               </div>
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>
-                <b>Tap upstream</b>: Claude CLI → local 19098 → this proxy → api.anthropic.com. SSE snapshots recorded.<br />
-                <b>Real proxy</b>: Claude CLI → this proxy → api.anthropic.com. 19098 is bypassed; no recording.
+                注入到会话进程的 <code>http_proxy</code>/<code>https_proxy</code>。
+                <b>Real</b> 模式下作为 Claude CLI 直连 anthropic 的代理；
+                <b>Tap</b> 模式下仅覆盖会话的非 Anthropic 流量（Anthropic 走上面的 Tap 路径）。
+                Save 同时保存 Mode 与此地址。
               </p>
             </div>
 

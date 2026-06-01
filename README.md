@@ -191,7 +191,11 @@ PORT=19399 FRONTEND_DIST=$(pwd)/frontend/dist go run ./cmd/server
 | Flag / Variable | Default | Description |
 |---|---|---|
 | `--port` / `ANTHROPIC_PROXY_PORT` | `19098` | Listen port |
-| `--upstream-proxy` / `ANTHROPIC_PROXY_UPSTREAM` | *(empty)* | Upstream HTTP proxy (leave empty for a direct connection) |
+| `--upstream-proxy` / `ANTHROPIC_PROXY_UPSTREAM` | *(empty)* | The **tap upstream**: where the tap forwards to reach the internet. Empty = connect directly to `api.anthropic.com` |
+
+> **Two different "proxy" settings — don't confuse them:**
+> - **Tap upstream** (above) is the tap's own internet hop, set at proxy startup. `restart.sh` passes it via the `PROXY_UPSTREAM` env (default `http://127.0.0.1:8138`). To make the tap go direct: `PROXY_UPSTREAM= ./restart.sh --proxy`.
+> - The Admin UI **"会话代理 / http_proxy"** field is a *separate* setting — the `http_proxy`/`https_proxy` injected into each session (the CLI's direct proxy in *real* mode; non-Anthropic traffic only in *tap* mode). It does **not** control the tap upstream.
 
 ---
 

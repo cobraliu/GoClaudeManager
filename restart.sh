@@ -137,7 +137,11 @@ fi
 # ── start web server ──────────────────────────────────────────────────────────
 if $DO_WEB; then
   echo "==> Starting web server on $WEB_HOST:$WEB_PORT"
+  # ANTHROPIC_PROXY_UPSTREAM is passed read-only so the web server can surface
+  # the tap's upstream (the same value the proxy was launched with) in the Admin
+  # UI's Proxy Settings. The web server never edits it; it only echoes it.
   HOST="$WEB_HOST" PORT="$WEB_PORT" FRONTEND_DIST="$ROOT/frontend/dist" \
+    ANTHROPIC_PROXY_UPSTREAM="$PROXY_UPSTREAM" \
     nohup ./bin/gocm > "$LOG_DIR/server.log" 2>&1 &
   echo $! > "$LOG_DIR/server.pid"
 

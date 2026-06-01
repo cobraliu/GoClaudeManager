@@ -99,6 +99,7 @@ type configView struct {
 	CursorBin               string   `json:"cursor_bin"`
 	Proxy                   string   `json:"proxy"`
 	ProxyMode               string   `json:"proxy_mode"`
+	TapUpstream             string   `json:"tap_upstream"`
 	TerminalFont            string   `json:"terminal_font"`
 	TermIdleGraceSeconds    int      `json:"term_idle_grace_seconds"`
 	TermStandbyGraceSeconds int      `json:"term_standby_grace_seconds"`
@@ -117,6 +118,12 @@ func fullConfig(c *config.Config) configView {
 		CursorBin:               c.CursorBin(),
 		Proxy:                   c.Proxy(),
 		ProxyMode:               c.ProxyMode(),
+		// TapUpstream is read-only and ops-level: it reflects how the standalone
+		// tap proxy (bin/proxy) was launched, surfaced here so the Admin UI can
+		// show it without the proxy binary needing any DB access. Empty = direct
+		// to api.anthropic.com. Set via PROXY_UPSTREAM (restart.sh) /
+		// --upstream-proxy / ANTHROPIC_PROXY_UPSTREAM at proxy startup.
+		TapUpstream:             os.Getenv("ANTHROPIC_PROXY_UPSTREAM"),
 		TerminalFont:            c.TerminalFont(),
 		TermIdleGraceSeconds:    c.TermIdleGraceSeconds(),
 		TermStandbyGraceSeconds: c.TermStandbyGraceSeconds(),
