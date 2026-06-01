@@ -258,7 +258,7 @@ func resumeSession(d Deps, w http.ResponseWriter, r *http.Request) {
 	// exiting immediately (which would let the monitor flip us back to terminated).
 	resume := ""
 	if s.Tool == "claude" || s.Tool == "cursor" {
-		resume = resolveChatSID(s.Tool, s.Cwd, s)
+		resume = resolveResumeSID(s.Tool, s.Cwd, s)
 	} else if s.AgentSessionID != nil {
 		resume = *s.AgentSessionID
 	}

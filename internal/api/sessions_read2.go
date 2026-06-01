@@ -118,7 +118,48 @@ func findNewestSessionID(tool, cwd string) string {
 // leaves the Chat view blank even though a perfectly good transcript exists in
 // the same project dir. Verifying the file exists before trusting the stored id
 // fixes that without changing the happy path.
+//
+// Brand-new sessions need extra care: until Claude starts and the manager
+// captures its agent session id, stored is "". A bare newest-in-cwd fallback
+// would then surface an UNRELATED older session's transcript whenever the new
+// session shares its cwd with previous ones — looking, from the user's side,
+// like the data got mixed up. So when stored is empty we only accept the newest
+// transcript if it was actually written at/after this session was created
+// (i.e. it can plausibly be this session's own transcript). Otherwise we return
+// "" and the Chat view stays empty until the real transcript appears.
 func resolveChatSID(tool, cwd string, s *model.Session) string {
+	stored := agentSessionID(s)
+	if stored != "" && resolveJSONLPath(tool, stored, cwd) != "" {
+		return stored
+	}
+	newest := findNewestSessionID(tool, cwd)
+	if newest == "" {
+		return stored
+	}
+	// Stale stored id (non-empty but its transcript is gone): trust the newest
+	// transcript in the cwd — the documented stale-id repair.
+	if stored != "" {
+		return newest
+	}
+	// No agent_session_id ever recorded: only adopt the newest transcript if it
+	// is recent enough to be this session's, not a leftover from an older
+	// session in the same cwd.
+	if p := resolveJSONLPath(tool, newest, cwd); p != "" {
+		if fi, err := os.Stat(p); err == nil && !fi.ModTime().Before(s.CreatedAt.Time) {
+			return newest
+		}
+	}
+	return ""
+}
+
+// resolveResumeSID is the unconditional newest-in-cwd fallback used by the
+// resume path. A terminated session being resumed already had a conversation,
+// so `claude --resume` must target a real transcript (resuming nothing makes
+// Claude exit immediately and the monitor flips us back to terminated). Unlike
+// resolveChatSID this does NOT apply the brand-new-session recency guard — by
+// definition the session has run before, and grabbing the newest transcript is
+// the desired desperation move when the stored id is gone.
+func resolveResumeSID(tool, cwd string, s *model.Session) string {
 	stored := agentSessionID(s)
 	if stored != "" && resolveJSONLPath(tool, stored, cwd) != "" {
 		return stored
@@ -126,8 +167,6 @@ func resolveChatSID(tool, cwd string, s *model.Session) string {
 	if newest := findNewestSessionID(tool, cwd); newest != "" {
 		return newest
 	}
-	// No file resolved either way; return the stored id (possibly "") so callers
-	// keep their existing empty/no-session handling.
 	return stored
 }
 
