@@ -74,6 +74,14 @@ func FindSessionJSONL(claudeSessionID, cwd string) string {
 // FindNewestClaudeSessionID returns the stem of the most-recently-modified
 // JSONL in the Claude project dir for cwd, or "".
 func FindNewestClaudeSessionID(cwd string) string {
+	return FindNewestClaudeSessionIDExcluding(cwd, nil)
+}
+
+// FindNewestClaudeSessionIDExcluding is FindNewestClaudeSessionID but skips any
+// JSONL whose stem is in exclude. Callers pass the set of agent_session_ids that
+// belong to OTHER sessions so the newest-in-cwd fallback never adopts a sibling
+// session's transcript. exclude may be nil.
+func FindNewestClaudeSessionIDExcluding(cwd string, exclude map[string]bool) string {
 	base := projectsDir()
 	if base == "" {
 		return ""
@@ -97,13 +105,17 @@ func FindNewestClaudeSessionID(cwd string) string {
 			if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
 				continue
 			}
+			stem := strings.TrimSuffix(e.Name(), ".jsonl")
+			if exclude[stem] {
+				continue
+			}
 			fi, err := e.Info()
 			if err != nil {
 				continue
 			}
 			if mt := fi.ModTime().UnixNano(); mt > bestMtime {
 				bestMtime = mt
-				best = strings.TrimSuffix(e.Name(), ".jsonl")
+				best = stem
 			}
 		}
 		return best

@@ -184,7 +184,7 @@ func listGoals(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"active": nil, "history": []any{}})
 		return
@@ -198,7 +198,7 @@ func listTodos(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"active": []any{}, "history": []any{}})
 		return
@@ -212,7 +212,7 @@ func statusBar(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"todos_active": []any{}, "goal_active": nil})
 		return
@@ -227,7 +227,7 @@ func listAUQs(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeJSON(w, http.StatusOK, []any{})
 		return
@@ -254,7 +254,7 @@ func getConversation(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fromTs := queryFloat(r, "from_ts", 0)
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeJSON(w, http.StatusOK, []any{})
 		return

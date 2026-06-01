@@ -148,7 +148,7 @@ func shareMessages(d Deps, w http.ResponseWriter, r *http.Request) {
 	// Resolve via resolveChatSID so a stale stored agent_session_id (one that no
 	// longer matches a JSONL on disk) falls back to the newest transcript in the
 	// cwd — otherwise the shared page renders no messages. Mirrors the Chat fix.
-	chatSID := resolveChatSID(session.Tool, session.Cwd, session)
+	chatSID := resolveChatSID(d, session)
 	jsonlPath := ""
 	if chatSID != "" {
 		jsonlPath = resolveJSONLPath(session.Tool, chatSID, session.Cwd)

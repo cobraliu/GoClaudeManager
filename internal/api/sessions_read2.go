@@ -90,81 +90,83 @@ func resolveJSONLPath(tool, chatSID, cwd string) string {
 }
 
 // findNewestSessionID replicates `adapter.find_newest_session_id(cwd)` for the
-// claude/cursor tools.
-func findNewestSessionID(tool, cwd string) string {
+// claude/cursor tools, skipping any transcript in `exclude` (the set of
+// agent_session_ids owned by OTHER sessions, so a fallback never adopts a
+// sibling's transcript). exclude may be nil.
+func findNewestSessionID(tool, cwd string, exclude map[string]bool) string {
 	switch tool {
 	case "cursor":
-		// Cursor newest = first of the newest-first local list.
-		if ls := jsonl.ListCursorLocalSessions(cwd); len(ls) > 0 {
-			return ls[0].AgentSessionID
+		// Cursor newest = first of the newest-first local list (excluding siblings).
+		for _, ls := range jsonl.ListCursorLocalSessions(cwd) {
+			if !exclude[ls.AgentSessionID] {
+				return ls.AgentSessionID
+			}
 		}
 		return ""
 	default:
-		return jsonl.FindNewestClaudeSessionID(cwd)
+		return jsonl.FindNewestClaudeSessionIDExcluding(cwd, exclude)
 	}
 }
 
 // resolveChatSID picks the agent/chat session id to read conversation history
-// from. It prefers the session's stored agent_session_id, but if that id does
-// not resolve to an existing JSONL on disk it falls back to the newest JSONL in
-// the session's cwd.
+// from for session s.
 //
-// This is intentionally stricter than the Python `agent_session_id or
-// find_newest_session_id` (which only falls back when the stored id is empty).
-// The manager captures the agent session id from ~/.claude/sessions/{pid}.json,
-// but that can disagree with the file Claude actually writes — e.g. when Claude
-// continues a pre-existing session that already lived in the same cwd. When the
-// stored id points at a file that was never written, the strict-OR behavior
-// leaves the Chat view blank even though a perfectly good transcript exists in
-// the same project dir. Verifying the file exists before trusting the stored id
-// fixes that without changing the happy path.
+// The only provably-correct source is s's own captured agent_session_id whose
+// JSONL exists on disk. When that does not resolve we must decide whether to
+// borrow a transcript from elsewhere in the cwd:
 //
-// Brand-new sessions need extra care: until Claude starts and the manager
-// captures its agent session id, stored is "". A bare newest-in-cwd fallback
-// would then surface an UNRELATED older session's transcript whenever the new
-// session shares its cwd with previous ones — looking, from the user's side,
-// like the data got mixed up. So when stored is empty we only accept the newest
-// transcript if it was actually written at/after this session was created
-// (i.e. it can plausibly be this session's own transcript). Otherwise we return
-// "" and the Chat view stays empty until the real transcript appears.
-func resolveChatSID(tool, cwd string, s *model.Session) string {
+//   - A session that has never produced a turn has NO transcript of its own yet
+//     (Claude writes the project JSONL only on the first message, even though
+//     the agent_session_id is captured ~immediately from the pid). In a shared
+//     cwd the newest file then belongs to a SIBLING session, so borrowing it
+//     shows another session's conversation — the reported "data got mixed up"
+//     bug. Return "" instead; the Chat view stays empty until this session talks.
+//   - A session that HAS conversed but whose stored id no longer resolves
+//     (Claude rotates its session id on compaction, or an old capture recorded
+//     an id whose file is gone) really does own a transcript in the cwd under a
+//     different id. Fall back to the newest one, but EXCLUDE any transcript
+//     already claimed by another session's agent_session_id, so we recover s's
+//     own rotated transcript without stealing a sibling's.
+//
+// The resume path keeps the unconditional newest fallback via resolveResumeSID.
+func resolveChatSID(d Deps, s *model.Session) string {
+	exclude, _ := d.Store.GetAllAgentSessionIDs(s.ID)
+	return resolveChatSIDCore(s, exclude)
+}
+
+// resolveChatSIDCore is the pure decision logic (no DB), exercised by tests.
+// `exclude` is the set of agent_session_ids owned by OTHER sessions.
+func resolveChatSIDCore(s *model.Session, exclude map[string]bool) string {
+	tool, cwd := s.Tool, s.Cwd
 	stored := agentSessionID(s)
 	if stored != "" && resolveJSONLPath(tool, stored, cwd) != "" {
 		return stored
 	}
-	newest := findNewestSessionID(tool, cwd)
-	if newest == "" {
-		return stored
+	// No resolvable own transcript. Only a session that has actually had a turn
+	// can legitimately own a transcript stored under a different id; one that has
+	// never talked must not borrow a sibling's newest file.
+	if s.LastTurnAt == nil {
+		return ""
 	}
-	// Stale stored id (non-empty but its transcript is gone): trust the newest
-	// transcript in the cwd — the documented stale-id repair.
-	if stored != "" {
+	if newest := findNewestSessionID(tool, cwd, exclude); newest != "" {
 		return newest
 	}
-	// No agent_session_id ever recorded: only adopt the newest transcript if it
-	// is recent enough to be this session's, not a leftover from an older
-	// session in the same cwd.
-	if p := resolveJSONLPath(tool, newest, cwd); p != "" {
-		if fi, err := os.Stat(p); err == nil && !fi.ModTime().Before(s.CreatedAt.Time) {
-			return newest
-		}
-	}
-	return ""
+	return stored
 }
 
 // resolveResumeSID is the unconditional newest-in-cwd fallback used by the
 // resume path. A terminated session being resumed already had a conversation,
 // so `claude --resume` must target a real transcript (resuming nothing makes
 // Claude exit immediately and the monitor flips us back to terminated). Unlike
-// resolveChatSID this does NOT apply the brand-new-session recency guard — by
-// definition the session has run before, and grabbing the newest transcript is
-// the desired desperation move when the stored id is gone.
+// resolveChatSID this does NOT apply the never-talked guard — by definition the
+// session has run before, and grabbing the newest transcript is the desired
+// desperation move when the stored id is gone.
 func resolveResumeSID(tool, cwd string, s *model.Session) string {
 	stored := agentSessionID(s)
 	if stored != "" && resolveJSONLPath(tool, stored, cwd) != "" {
 		return stored
 	}
-	if newest := findNewestSessionID(tool, cwd); newest != "" {
+	if newest := findNewestSessionID(tool, cwd, nil); newest != "" {
 		return newest
 	}
 	return stored
@@ -285,7 +287,7 @@ func conversationJSONL(d Deps, w http.ResponseWriter, r *http.Request) {
 		pageSize = 1000
 	}
 
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeErr(w, http.StatusNotFound, "no "+s.Tool+" session")
 		return
@@ -423,7 +425,7 @@ func getSubagents(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeJSON(w, http.StatusOK, []jsonl.Subagent{})
 		return
@@ -437,7 +439,7 @@ func getSubagentContent(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := chi.URLParam(r, "agentID")
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
 		writeErr(w, http.StatusNotFound, "no claude session")
 		return
@@ -472,7 +474,7 @@ func getRawMessages(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	jsonlPath := ""
 	if chatSID != "" {
 		jsonlPath = resolveJSONLPath(s.Tool, chatSID, s.Cwd)
@@ -814,7 +816,7 @@ func getRawMessagesAll(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatSID := resolveChatSID(s.Tool, s.Cwd, s)
+	chatSID := resolveChatSID(d, s)
 	jsonlPath := ""
 	if chatSID != "" {
 		jsonlPath = resolveJSONLPath(s.Tool, chatSID, s.Cwd)

@@ -11,8 +11,7 @@ import (
 )
 
 // writeJSONL creates ~/.claude/projects/<encoded-cwd>/<sid>.jsonl with the
-// given mtime, under the test's temp HOME. Returns nothing; the file presence +
-// mtime is what the resolver keys off.
+// given mtime, under the test's temp HOME.
 func writeJSONL(t *testing.T, home, cwd, sid string, mtime time.Time) {
 	t.Helper()
 	encoded := strings.ReplaceAll(strings.ReplaceAll(strings.TrimRight(cwd, "/"), "/", "-"), "_", "-")
@@ -31,88 +30,86 @@ func writeJSONL(t *testing.T, home, cwd, sid string, mtime time.Time) {
 
 func ptr(s string) *string { return &s }
 
-// TestResolveChatSID_BrandNewSessionDoesNotBorrowOlderTranscript pins the bug
-// fix: a freshly created session (no agent_session_id yet) that shares its cwd
-// with an older session must NOT surface that older session's transcript.
-func TestResolveChatSID_BrandNewSessionDoesNotBorrowOlderTranscript(t *testing.T) {
+func isoPtr(tm time.Time) *model.ISOTime { v := model.ISOTime{Time: tm}; return &v }
+
+// TestResolveChatSID_NeverTalkedDoesNotBorrowSibling pins the reported bug:
+// session B (created after A, never typed) must NOT show A's transcript even
+// though B's agent_session_id is captured but B has no transcript of its own.
+func TestResolveChatSID_NeverTalkedDoesNotBorrowSibling(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cwd := "/tmp/cm-test-proj"
 
-	created := time.Now()
-	// An OLDER session's transcript, written before our session was created.
-	writeJSONL(t, home, cwd, "old-other-session", created.Add(-1*time.Hour))
+	// A typed → A's transcript exists. B never typed → no B transcript on disk.
+	writeJSONL(t, home, cwd, "A-sid", time.Now())
 
-	fresh := &model.Session{
-		Tool:      "claude",
-		Cwd:       cwd,
-		CreatedAt: model.ISOTime{Time: created},
-		// AgentSessionID nil → stored == ""
+	b := &model.Session{
+		Tool:           "claude",
+		Cwd:            cwd,
+		AgentSessionID: ptr("B-sid"), // captured from pid, but no file written yet
+		// LastTurnAt nil → never talked
 	}
-	if got := resolveChatSID("claude", cwd, fresh); got != "" {
-		t.Fatalf("brand-new session should not adopt an older foreign transcript, got %q", got)
-	}
-	// resume path, by contrast, intentionally grabs the newest as a fallback.
-	if got := resolveResumeSID("claude", cwd, fresh); got != "old-other-session" {
-		t.Fatalf("resume should fall back to newest transcript, got %q", got)
+	// exclude = sibling A's claimed id.
+	if got := resolveChatSIDCore(b, map[string]bool{"A-sid": true}); got != "" {
+		t.Fatalf("never-talked session must show empty, got %q", got)
 	}
 }
 
-// TestResolveChatSID_AdoptsOwnFreshTranscript: once this session writes its own
-// transcript (mtime at/after creation), the Chat view should pick it up even
-// before agent_session_id is captured.
-func TestResolveChatSID_AdoptsOwnFreshTranscript(t *testing.T) {
+// TestResolveChatSID_OwnFileWins: once a session has its own transcript on disk,
+// that is returned regardless of siblings.
+func TestResolveChatSID_OwnFileWins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cwd := "/tmp/cm-test-proj2"
 
-	created := time.Now().Add(-1 * time.Minute)
-	writeJSONL(t, home, cwd, "my-own-session", created.Add(10*time.Second))
+	now := time.Now()
+	writeJSONL(t, home, cwd, "own-sid", now)
+	writeJSONL(t, home, cwd, "sibling-sid", now.Add(time.Hour)) // newer sibling
 
-	s := &model.Session{Tool: "claude", Cwd: cwd, CreatedAt: model.ISOTime{Time: created}}
-	if got := resolveChatSID("claude", cwd, s); got != "my-own-session" {
-		t.Fatalf("should adopt own fresh transcript, got %q", got)
+	s := &model.Session{
+		Tool:           "claude",
+		Cwd:            cwd,
+		AgentSessionID: ptr("own-sid"),
+		LastTurnAt:     isoPtr(now),
+	}
+	if got := resolveChatSIDCore(s, map[string]bool{"sibling-sid": true}); got != "own-sid" {
+		t.Fatalf("own existing transcript should win, got %q", got)
 	}
 }
 
-// TestResolveChatSID_StaleStoredIDFallsBack: stored id whose file is gone still
-// repairs to the newest transcript (the original documented behavior).
-func TestResolveChatSID_StaleStoredIDFallsBack(t *testing.T) {
+// TestResolveChatSID_RotatedIDRecoversOwnNotSibling: a session that conversed
+// but whose stored id was rotated away (file gone) recovers the newest UNCLAIMED
+// transcript in the cwd, never a sibling's claimed transcript.
+func TestResolveChatSID_RotatedIDRecoversOwnNotSibling(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cwd := "/tmp/cm-test-proj3"
 
-	created := time.Now()
-	writeJSONL(t, home, cwd, "live-transcript", created.Add(-2*time.Hour))
+	base := time.Now()
+	// Sibling's transcript is the newest overall, but it is claimed.
+	writeJSONL(t, home, cwd, "sibling-sid", base.Add(2*time.Hour))
+	// This session's rotated transcript (unclaimed), older than the sibling's.
+	writeJSONL(t, home, cwd, "rotated-own", base.Add(1*time.Hour))
 
 	s := &model.Session{
 		Tool:           "claude",
 		Cwd:            cwd,
-		CreatedAt:      model.ISOTime{Time: created},
-		AgentSessionID: ptr("ghost-id-no-file"),
+		AgentSessionID: ptr("ghost-stale-id"), // no file on disk
+		LastTurnAt:     isoPtr(base),
 	}
-	if got := resolveChatSID("claude", cwd, s); got != "live-transcript" {
-		t.Fatalf("stale stored id should repair to newest transcript, got %q", got)
+	if got := resolveChatSIDCore(s, map[string]bool{"sibling-sid": true}); got != "rotated-own" {
+		t.Fatalf("should recover own rotated transcript, not the claimed sibling, got %q", got)
 	}
 }
 
-// TestResolveChatSID_StoredIDWithFileWins: the happy path is unchanged.
-func TestResolveChatSID_StoredIDWithFileWins(t *testing.T) {
+// TestResolveChatSID_NoTranscriptAtAll: never-talked, nothing on disk → empty.
+func TestResolveChatSID_NoTranscriptAtAll(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cwd := "/tmp/cm-test-proj4"
 
-	now := time.Now()
-	writeJSONL(t, home, cwd, "stored-sid", now)
-	writeJSONL(t, home, cwd, "newer-other", now.Add(1*time.Hour))
-
-	s := &model.Session{
-		Tool:           "claude",
-		Cwd:            cwd,
-		CreatedAt:      model.ISOTime{Time: now.Add(-1 * time.Hour)},
-		AgentSessionID: ptr("stored-sid"),
-	}
-	if got := resolveChatSID("claude", cwd, s); got != "stored-sid" {
-		t.Fatalf("stored id with existing file should win, got %q", got)
+	s := &model.Session{Tool: "claude", Cwd: cwd, AgentSessionID: ptr("B-sid")}
+	if got := resolveChatSIDCore(s, nil); got != "" {
+		t.Fatalf("no transcript + never talked → empty, got %q", got)
 	}
 }
