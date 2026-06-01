@@ -18,6 +18,17 @@ import {
   type TerminalInfo,
 } from "../api/sessionApi";
 import { TerminalPane } from "./TerminalPane";
+import { TermKeysBar } from "./TermKeysBar";
+
+// Assistive-keys bar visibility, persisted. Defaults ON for touch devices
+// (tablets/phones whose soft keyboards lack ESC/Ctrl/symbols), OFF otherwise.
+const KEYS_BAR_LS = "termKeysBar:v1";
+const initialKeysBar = (): boolean => {
+  if (typeof window === "undefined") return false;
+  const saved = window.localStorage.getItem(KEYS_BAR_LS);
+  if (saved !== null) return saved === "1";
+  return "ontouchstart" in window || navigator.maxTouchPoints > 0;
+};
 
 // Per-instance cache: which term_id we were attached to last. Used on panel
 // mount / page reload to reattach instead of spawning yet another ephemeral.
@@ -86,6 +97,18 @@ export function EmbeddedTerminalPanel({
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [keysBar, setKeysBar] = useState(initialKeysBar);
+
+  // Populated by TerminalPane; lets the assistive keys bar inject raw byte
+  // sequences (ESC, Ctrl-combos, symbols) straight into the PTY.
+  const sendRawRef = useRef<((data: string) => void) | null>(null);
+  const toggleKeysBar = useCallback(() => {
+    setKeysBar(v => {
+      const next = !v;
+      try { window.localStorage.setItem(KEYS_BAR_LS, next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
 
   const dragging = useRef(false);
   const dragStartY = useRef(0);
@@ -514,6 +537,15 @@ export function EmbeddedTerminalPanel({
         <span style={{ color: "var(--text-faint)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 280 }}>
           {cwd || ""}
         </span>
+        <button
+          onClick={toggleKeysBar}
+          title={keysBar ? "Hide assistive keys" : "Show assistive keys (ESC, Ctrl, symbols…)"}
+          style={{
+            background: keysBar ? "color-mix(in srgb, var(--accent-blue) 20%, var(--bg-base))" : "var(--bg-hover)",
+            color: keysBar ? "var(--accent-blue)" : "var(--text-secondary)",
+            fontSize: 11, padding: "2px 8px", lineHeight: 1,
+          }}
+        >⌨</button>
         {!fill && (
           <button
             onClick={() => onOpenChange(false)}
@@ -589,9 +621,13 @@ export function EmbeddedTerminalPanel({
             onDisconnect={() => setAttached(null)}
             defaultFit
             fontFamily={fontFamily}
+            sendRawRef={sendRawRef}
           />
         )}
       </div>
+      {attached && !error && keysBar && (
+        <TermKeysBar sendKey={(seq) => sendRawRef.current?.(seq)} />
+      )}
       {!fill && resizeFrom === "bottom" && resizeHandle}
     </div>
   );
