@@ -34,6 +34,7 @@ import {
   type ModelInfo,
   type TuiAuqData,
   type TuiApproveData,
+  type TuiPlanData,
   type Goal,
   type TodoItem,
   type TodoPlan,
@@ -1441,6 +1442,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
   const [tuiHint, setTuiHint] = useState<string | null>(null);
   const [tuiAuqData, setTuiAuqData] = useState<TuiAuqData | null>(null);
   const [tuiApproveData, setTuiApproveData] = useState<TuiApproveData | null>(null);
+  const [tuiPlanData, setTuiPlanData] = useState<TuiPlanData | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactingProgress, setCompactingProgress] = useState<string | null>(null);
   // Which session the above tui* states belong to. Used to gate the values at
@@ -1700,6 +1702,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
     // approval / hint before the first poll for the new session returns.
     setTuiAuqData(null);
     setTuiApproveData(null);
+    setTuiPlanData(null);
     setTuiHint(null);
     setIsCompacting(false);
     setCompactingProgress(null);
@@ -1746,6 +1749,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
           });
           setTuiAuqData(st.tui_auq_data ?? null);
           setTuiApproveData(st.tui_approve_data ?? null);
+          setTuiPlanData(st.tui_plan_data ?? null);
           setIsCompacting(!!st.is_compacting);
           setCompactingProgress(st.compacting_progress ?? null);
           setTuiOwnerSessionId(activeSessionId);
@@ -1753,6 +1757,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
           setTuiHint(null);
           setTuiAuqData(null);
           setTuiApproveData(null);
+          setTuiPlanData(null);
           setIsCompacting(false);
           setCompactingProgress(null);
           setTuiOwnerSessionId(activeSessionId);
@@ -2598,6 +2603,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
                               isWaitingForAuq={fresh && !!tuiHint?.includes("asking a question")}
                               pendingAuqData={fresh ? tuiAuqData : null}
                               pendingApproveData={fresh ? tuiApproveData : null}
+                              pendingPlanData={fresh ? tuiPlanData : null}
                               refreshRef={convRefreshRef}
                             />
                           </div>

@@ -142,6 +142,7 @@ func listSessionsStatus(d Deps, w http.ResponseWriter, r *http.Request) {
 			TuiAuqData:         comp.TuiAuqData,
 			TuiApproveData:     comp.TuiApproveData,
 			TuiPlanPending:     comp.TuiPlanPending,
+			TuiPlanData:        comp.TuiPlanData,
 		})
 	}
 	writeJSON(w, http.StatusOK, model.SessionStatusListResponse{Items: views, Total: len(views)})

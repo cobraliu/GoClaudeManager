@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/loki/goclaudemanager/internal/claudestat"
 	"github.com/loki/goclaudemanager/internal/jsonl"
 	"github.com/loki/goclaudemanager/internal/model"
 )
@@ -343,12 +344,127 @@ func toolApprove(d Deps, w http.ResponseWriter, r *http.Request) {
 // ── POST /{id}/plan-approve ────────────────────────────────────────────────
 
 type planApproveBody struct {
-	Decision string `json:"decision"` // "approve" | "reject"
+	// Explicit selection (preferred): the frontend renders the real menu options
+	// parsed from the live screen (status.tui_plan_data) and sends back the exact
+	// option the user picked. Label is matched against the re-read screen; Index
+	// is the 0-based fallback when Label is empty.
+	Label string `json:"label"`
+	Index *int   `json:"index"`
+	// Legacy intent (fallback when no explicit option is sent): "approve" keeps
+	// the most-permissive auto mode; "reject" tells Claude to change.
+	Decision string `json:"decision"`
+	// Feedback is the text typed into the "Tell Claude what to change" freeform
+	// field before submitting. Ignored for any other option. Empty → submit blank
+	// (declines without guidance, the legacy behavior).
+	Feedback string `json:"feedback"`
 }
 
-// planApprove resolves a pending ExitPlanMode modal. Approve → option 2 (manual
-// approve edits): Down ×1 → Enter. Reject → option 4 (tell Claude what to
-// change): Down ×3 → Enter, then a follow-up Enter to submit empty feedback.
+var (
+	// Approve-intent matchers, in priority order. "bypass permissions" keeps
+	// --dangerously-skip-permissions; "auto-accept edits" is its non-bypass-mode
+	// equivalent; a bare leading "Yes" is the most-permissive fallback.
+	rePlanBypass     = regexp.MustCompile(`(?i)bypass permissions`)
+	rePlanAutoAccept = regexp.MustCompile(`(?i)auto-?accept edits`)
+	rePlanYes        = regexp.MustCompile(`(?i)^yes\b`)
+	// Reject-intent matchers, in priority order. "tell claude" opens a freeform
+	// text field (needs an empty follow-up Enter); the others just decline.
+	rePlanTellClaude   = regexp.MustCompile(`(?i)tell claude`)
+	rePlanKeepPlanning = regexp.MustCompile(`(?i)keep planning`)
+	rePlanNo           = regexp.MustCompile(`(?i)^no\b`)
+)
+
+// planSelection is the outcome of resolving a request against the on-screen menu.
+type planSelection struct {
+	downDelta     int    // rows to move from the highlighted row to the target (signed)
+	label         string // the matched option's label
+	needsFollowup bool   // target opens a text field → send an extra empty Enter
+}
+
+// firstPlanMatch returns the index of the first option whose label matches re, or -1.
+func firstPlanMatch(opts []claudestat.PlanMenuOption, re *regexp.Regexp) int {
+	for _, o := range opts {
+		if re.MatchString(o.Label) {
+			return o.Index
+		}
+	}
+	return -1
+}
+
+// resolvePlanTarget picks the target option index from a parsed menu. An explicit
+// label (exact, then substring) or index wins; otherwise the legacy approve/reject
+// intent is matched against the option labels. Returns -1 when nothing matches.
+func resolvePlanTarget(opts []claudestat.PlanMenuOption, label string, index *int, decision string) int {
+	if label != "" {
+		for _, o := range opts { // exact first
+			if o.Label == label {
+				return o.Index
+			}
+		}
+		for _, o := range opts { // then substring (tolerate trailing hints)
+			if strings.Contains(o.Label, label) || strings.Contains(label, o.Label) {
+				return o.Index
+			}
+		}
+		return -1
+	}
+	if index != nil {
+		if *index >= 0 && *index < len(opts) {
+			return *index
+		}
+		return -1
+	}
+	switch decision {
+	case "approve":
+		for _, re := range []*regexp.Regexp{rePlanBypass, rePlanAutoAccept, rePlanYes} {
+			if t := firstPlanMatch(opts, re); t >= 0 {
+				return t
+			}
+		}
+	case "reject":
+		if t := firstPlanMatch(opts, rePlanTellClaude); t >= 0 {
+			return t
+		}
+		if t := firstPlanMatch(opts, rePlanKeepPlanning); t >= 0 {
+			return t
+		}
+		return firstPlanMatch(opts, rePlanNo)
+	}
+	return -1
+}
+
+// selectPlanOption resolves an approve/reject decision against the on-screen menu,
+// returning how far to move from the highlighted row and which option was matched.
+// Pure (no tmux/IO) so it is unit-testable. ok=false means the screen is not a
+// recognized plan menu, or no option matched the decision.
+func selectPlanOption(screen, decision string) (planSelection, bool) {
+	return planSelectionFor(screen, "", nil, decision)
+}
+
+// planSelectionFor resolves any plan request (explicit label/index, or legacy
+// decision intent) against the on-screen menu into a navigation plan.
+func planSelectionFor(screen, label string, index *int, decision string) (planSelection, bool) {
+	opts, highlightedIdx, ok := claudestat.ParsePlanMenu(screen)
+	if !ok {
+		return planSelection{}, false
+	}
+	target := resolvePlanTarget(opts, label, index, decision)
+	if target < 0 {
+		return planSelection{}, false
+	}
+	return planSelection{
+		downDelta: target - highlightedIdx,
+		label:     opts[target].Label,
+		// "Tell Claude what to change" opens a freeform input → submit empty.
+		needsFollowup: rePlanTellClaude.MatchString(opts[target].Label),
+	}, true
+}
+
+// planApprove resolves a pending ExitPlanMode modal by reading the on-screen menu
+// and navigating to the exact option the user picked (by label/index), or — when
+// no explicit option is sent — by legacy approve/reject intent. Navigation is by
+// delta from the live highlight, never a fixed keystroke count, mirroring
+// toolApprove. If no plan menu is on screen, or nothing matches, we refuse (409)
+// instead of pressing a key that could land on the wrong option.
 func planApprove(d Deps, w http.ResponseWriter, r *http.Request) {
 	s := resolveOwned(d, w, r)
 	if s == nil {
@@ -358,29 +474,48 @@ func planApprove(d Deps, w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-
-	pane := s.TmuxSessionName + ":0.0"
-	switch body.Decision {
-	case "approve":
-		// option 2 — modal opens with option 1 highlighted, Down × 1 → Enter.
-		d.Tmux.Run("send-keys", "-t", pane, "Down")
-		time.Sleep(150 * time.Millisecond)
-		d.Tmux.Run("send-keys", "-t", pane, "Enter")
-	case "reject":
-		// option 4 — Down × 3 → Enter. May open a feedback input; we pass none,
-		// so a follow-up Enter submits empty.
-		for j := 0; j < 3; j++ {
-			d.Tmux.Run("send-keys", "-t", pane, "Down")
-			time.Sleep(150 * time.Millisecond)
-		}
-		d.Tmux.Run("send-keys", "-t", pane, "Enter")
-		time.Sleep(300 * time.Millisecond)
-		d.Tmux.Run("send-keys", "-t", pane, "Enter")
-	default:
-		writeErr(w, http.StatusBadRequest, "decision must be 'approve' or 'reject'")
+	if body.Label == "" && body.Index == nil &&
+		body.Decision != "approve" && body.Decision != "reject" {
+		writeErr(w, http.StatusBadRequest, "provide a 'label'/'index' option, or decision 'approve'|'reject'")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	pane := s.TmuxSessionName + ":0.0"
+	screen := d.Tmux.CaptureVisibleScreen(s.TmuxSessionName)
+	sel, ok := planSelectionFor(screen, body.Label, body.Index, body.Decision)
+	if !ok {
+		writeErr(w, http.StatusConflict, "no recognized ExitPlanMode menu is currently displayed (or no matching option)")
+		return
+	}
+
+	// Navigate from the highlighted row to the target row, one row per press.
+	switch {
+	case sel.downDelta > 0:
+		for j := 0; j < sel.downDelta; j++ {
+			d.Tmux.Run("send-keys", "-t", pane, "Down")
+			time.Sleep(100 * time.Millisecond)
+		}
+	case sel.downDelta < 0:
+		for j := 0; j < -sel.downDelta; j++ {
+			d.Tmux.Run("send-keys", "-t", pane, "Up")
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	d.Tmux.Run("send-keys", "-t", pane, "Enter") // select option (opens text field when needsFollowup)
+	if sel.needsFollowup {
+		// "Tell Claude what to change" opens a freeform input. Type the user's
+		// feedback into it (mirroring the AUQ type_something path), then submit.
+		// Empty feedback just submits blank — declines without guidance.
+		time.Sleep(300 * time.Millisecond)
+		if fb := strings.TrimSpace(body.Feedback); fb != "" {
+			d.Tmux.Run("send-keys", "-t", pane, "-l", fb)
+			time.Sleep(200 * time.Millisecond)
+		}
+		d.Tmux.Run("send-keys", "-t", pane, "Enter")
+	}
+
+	slog.Info("[plan] resolved", "decision", body.Decision, "chosen", sel.label, "hasFeedback", strings.TrimSpace(body.Feedback) != "", "downDelta", sel.downDelta)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "chosen": sel.label})
 }
 
 // ── POST /{id}/rewind ──────────────────────────────────────────────────────

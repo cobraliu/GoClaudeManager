@@ -253,6 +253,9 @@ export interface ConfigView {
   cursor_bin: string;
   proxy: string;
   proxy_mode: ProxyMode;
+  /** Read-only: the tap proxy's upstream, set at proxy launch (PROXY_UPSTREAM /
+   *  --upstream-proxy). Empty = the tap connects directly to api.anthropic.com. */
+  tap_upstream: string;
   terminal_font: string;
   term_idle_grace_seconds: number;
   term_standby_grace_seconds: number;
@@ -406,6 +409,17 @@ export interface TuiApproveData {
   tool_input: Record<string, unknown>;
 }
 
+export interface TuiPlanOption {
+  index: number;
+  label: string;
+  highlighted: boolean;
+}
+
+export interface TuiPlanData {
+  options?: TuiPlanOption[];
+  highlighted?: number;
+}
+
 export interface SessionStatusItem {
   id: string;
   status: string;
@@ -419,6 +433,7 @@ export interface SessionStatusItem {
   tui_auq_data?: TuiAuqData | null;
   tui_approve_data?: TuiApproveData | null;
   tui_plan_pending?: boolean;
+  tui_plan_data?: TuiPlanData | null;
 }
 
 export function approveToolRequest(sessionId: string, decision: "allow" | "deny"): Promise<{ ok: boolean }> {
@@ -428,10 +443,26 @@ export function approveToolRequest(sessionId: string, decision: "allow" | "deny"
   });
 }
 
-export function approvePlan(sessionId: string, decision: "approve" | "reject"): Promise<{ ok: boolean }> {
+// PlanDecision drives the ExitPlanMode menu. Prefer an explicit option (label is
+// matched against the live screen; index is the 0-based fallback) so the UI can
+// pick any real menu item; decision is the legacy approve/reject intent fallback.
+export interface PlanDecision {
+  label?: string;
+  index?: number;
+  decision?: "approve" | "reject";
+  // Text typed into the "Tell Claude what to change" field before submitting.
+  // Ignored for any other option.
+  feedback?: string;
+}
+
+export function approvePlan(
+  sessionId: string,
+  choice: "approve" | "reject" | PlanDecision,
+): Promise<{ ok: boolean; chosen?: string }> {
+  const body: PlanDecision = typeof choice === "string" ? { decision: choice } : choice;
   return request(`/api/sessions/${sessionId}/plan-approve`, {
     method: "POST",
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify(body),
   });
 }
 

@@ -107,6 +107,7 @@ type SessionStatusView struct {
 	TuiAuqData         map[string]any `json:"tui_auq_data"`
 	TuiApproveData     map[string]any `json:"tui_approve_data"`
 	TuiPlanPending     bool           `json:"tui_plan_pending"`
+	TuiPlanData        map[string]any `json:"tui_plan_data"`
 }
 
 // SessionStatusListResponse mirrors pydantic SessionStatusListResponse.

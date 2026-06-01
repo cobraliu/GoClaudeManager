@@ -31,6 +31,7 @@ type Computed struct {
 	TuiAuqData         map[string]any `json:"tui_auq_data"`
 	TuiApproveData     map[string]any `json:"tui_approve_data"`
 	TuiPlanPending     bool           `json:"tui_plan_pending"`
+	TuiPlanData        map[string]any `json:"tui_plan_data"`
 }
 
 var reYesOption = regexp.MustCompile(`❯\s*1\.\s*Yes`)
@@ -114,7 +115,7 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		agentID = *s.AgentSessionID
 	}
 
-	var auq, approve map[string]any
+	var auq, approve, planData map[string]any
 	planViaScreen := false
 
 	var waitingFor, hintType string
@@ -143,6 +144,15 @@ func (m *Manager) Compute(s *model.Session) Computed {
 				switch {
 				case strings.Contains(screen, "Claude has written up a plan"):
 					planViaScreen = true
+					// Surface the real menu options so the UI can render them
+					// like AUQ (instead of a fixed Approve/Reject pair).
+					if opts, hi, ok := claudestat.ParsePlanMenu(screen); ok {
+						os := make([]map[string]any, len(opts))
+						for i, o := range opts {
+							os[i] = map[string]any{"index": o.Index, "label": o.Label, "highlighted": o.Highlighted}
+						}
+						planData = map[string]any{"options": os, "highlighted": hi}
+					}
 				case strings.Contains(screen, "Claude wants to use"),
 					strings.Contains(screen, "Esc to cancel") && reYesOption.MatchString(screen):
 					approve = hookApprove
@@ -208,5 +218,6 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		TuiAuqData:         auq,
 		TuiApproveData:     approve,
 		TuiPlanPending:     planPending,
+		TuiPlanData:        planData,
 	}
 }

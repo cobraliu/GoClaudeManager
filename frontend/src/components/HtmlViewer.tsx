@@ -2,10 +2,18 @@ import { useState, useEffect, useMemo } from "react";
 import { readFile } from "../api/sessionApi";
 
 // ── HTML Viewer ───────────────────────────────────────────────────────────
-// Renders pure HTML in a sandboxed iframe (no allow-same-origin, so it can't
-// touch the host). An injected script intercepts <a> clicks and postMessages
-// the href to the parent; relative paths are resolved against the current
-// path's dir and pushed onto an internal back stack.
+// Renders pure HTML in a sandboxed iframe. We include allow-same-origin so
+// prototypes that touch localStorage / sessionStorage / IndexedDB (theme
+// persistence, client state, most React/Vue scaffolds) render instead of
+// throwing SecurityError on an opaque origin. The tradeoff: with srcDoc, the
+// frame then shares the host app's origin and can in principle reach our
+// localStorage/API — acceptable here because these are the user's own
+// in-session prototype files. The PUBLIC share viewer (ShareFilesTab) keeps the
+// stricter allow-scripts-only sandbox precisely because its content is exposed
+// to untrusted viewers.
+// An injected script intercepts <a> clicks and postMessages the href to the
+// parent; relative paths are resolved against the current path's dir and pushed
+// onto an internal back stack.
 //
 // Shared between desktop (CodePane) and mobile (MobilePage) so the two stay
 // in sync. The nav bar uses tap-friendly sizing that's also fine on desktop.
@@ -147,7 +155,7 @@ export function HtmlViewer({ sessionId, path, initialContent }: {
       ) : (
         <iframe
           key={currentPath}
-          sandbox="allow-scripts"
+          sandbox="allow-scripts allow-same-origin"
           srcDoc={injected}
           style={{ flex: 1, border: "none", background: "white", minHeight: 0 }}
           title={currentPath}

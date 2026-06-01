@@ -220,6 +220,57 @@ done:
 	return nil, false
 }
 
+// ── ExitPlanMode menu parsing ──────────────────────────────────────────────
+
+var (
+	// planMenuOptRE matches a numbered ExitPlanMode menu line: "❯ 1. Yes, and …".
+	// capture-pane -p yields plain text (no ANSI) including the ❯ highlight
+	// marker, so the marker and label parse directly. Groups: 1=highlight,
+	// 2=number, 3=label.
+	planMenuOptRE = regexp.MustCompile(`(?m)^\s*(❯)?\s*(\d+)\.\s+(.+?)\s*$`)
+	// planApprovePhrasingRE is a plan-specific approve phrasing used to recognize
+	// the ExitPlanMode menu structurally (resilient to wording/order changes).
+	planApprovePhrasingRE = regexp.MustCompile(`(?i)bypass permissions|auto-?accept edits|manually approve edits`)
+)
+
+// PlanMenuOption is one parsed ExitPlanMode menu row.
+type PlanMenuOption struct {
+	Index       int    `json:"index"`       // 0-based position in the rendered list
+	Label       string `json:"label"`       // text after "N. "
+	Highlighted bool   `json:"highlighted"` // the ❯ cursor is on this row
+}
+
+// ParsePlanMenu extracts the numbered options from a captured ExitPlanMode menu
+// screen. Recognition is structural so it survives wording/order/count changes
+// across Claude Code versions: ≥2 numbered options plus a plan-specific approve
+// phrasing, or the stable "Would you like to proceed" prompt. Returns the
+// options, the highlighted row index (0 if none marked), and whether the screen
+// looks like a plan menu.
+func ParsePlanMenu(screen string) (opts []PlanMenuOption, highlightedIdx int, ok bool) {
+	matches := planMenuOptRE.FindAllStringSubmatch(screen, -1)
+	for i, m := range matches {
+		o := PlanMenuOption{Index: i, Label: strings.TrimSpace(m[3]), Highlighted: m[1] == "❯"}
+		if o.Highlighted {
+			highlightedIdx = i
+		}
+		opts = append(opts, o)
+	}
+	if len(opts) < 2 {
+		return nil, 0, false
+	}
+	hasApprovePhrasing := false
+	for _, o := range opts {
+		if planApprovePhrasingRE.MatchString(o.Label) {
+			hasApprovePhrasing = true
+			break
+		}
+	}
+	if !hasApprovePhrasing && !strings.Contains(screen, "Would you like to proceed") {
+		return nil, 0, false
+	}
+	return opts, highlightedIdx, true
+}
+
 // ── PID waiting state ──────────────────────────────────────────────────────
 
 // pidSession is the subset of ~/.claude/sessions/{pid}.json we read.

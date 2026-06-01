@@ -1718,18 +1718,41 @@ function ToolApprovalBlock({ sessionId, toolName, toolInput, onDone }: {
   );
 }
 
-function PlanApprovalBlock({ blockId, planText, planPath, onSubmit }: {
+// PlanChoice is what PlanApprovalBlock asks the parent to send: either an
+// explicit menu option (label/index, parsed live from the TUI) or the legacy
+// approve/reject intent when no real options are available.
+type PlanChoice = { decision?: "approve" | "reject"; label?: string; index?: number; feedback?: string };
+type PlanMenuOption = { index: number; label: string; highlighted: boolean };
+
+// isApproveLabel classifies a menu option as a "go ahead" (green) vs a decline
+// (red) for button tinting — purely cosmetic; the backend matches by label.
+const isApproveLabel = (l: string) => /^\s*yes\b|bypass|accept edits/i.test(l) && !/^\s*no\b/i.test(l);
+// isTellClaudeLabel marks the option that opens a freeform "what to change" field
+// — picking it should collect text from the user, not submit blank.
+const isTellClaudeLabel = (l: string) => /tell claude/i.test(l);
+
+function PlanApprovalBlock({ blockId, planText, planPath, options, onSubmit }: {
   blockId: string;
   planText?: string;
   planPath?: string;
-  onSubmit: (decision: "approve" | "reject") => void;
+  options?: PlanMenuOption[];
+  onSubmit: (choice: PlanChoice) => Promise<void>;
 }) {
   const [dismissed, setDismissed] = useState(false);
-  // Two-stage confirmation: clicking Approve/Reject parks in a "confirm-*"
-  // state so a stray click can't accidentally send a Claude CLI keystroke
-  // sequence. The user has to click the second confirm to actually fire.
-  type Confirm = "none" | "approve" | "reject";
-  const [confirm, setConfirm] = useState<Confirm>("none");
+  // Two-stage confirmation: the first click parks the chosen option/intent in
+  // `confirm` so a stray click can't fire a Claude CLI keystroke sequence; the
+  // user must click the second confirm to actually send it.
+  // confirm === null  → showing the option list / Approve-Reject buttons
+  // confirm.kind="opt"→ awaiting confirm for a specific menu option
+  // confirm.kind="legacy" → awaiting confirm for an approve/reject intent
+  type Confirm =
+    | null
+    | { kind: "opt"; index: number; label: string }
+    | { kind: "legacy"; decision: "approve" | "reject" };
+  const [confirm, setConfirm] = useState<Confirm>(null);
+  // Freeform "what to change" text, collected when the pending choice opens the
+  // Tell-Claude field. Sent verbatim to the backend, which types it into the TUI.
+  const [feedback, setFeedback] = useState("");
   const [fetched, setFetched] = useState<string | undefined>(
     planPath ? _planContentCache.get(planPath) : undefined,
   );
@@ -1749,12 +1772,23 @@ function PlanApprovalBlock({ blockId, planText, planPath, onSubmit }: {
 
   if (dismissed || _dismissedPlan.has(blockId)) return null;
 
-  const submit = (decision: "approve" | "reject") => {
-    _dismissedPlan.add(blockId);
-    _planPersist(_dismissedPlan);
-    setDismissed(true);
-    onSubmit(decision);
+  const submit = (choice: PlanChoice) => {
+    // Optimistically nothing: only dismiss the card once the backend confirms it
+    // actually resolved the modal. On failure (e.g. 409 — the on-screen menu was
+    // not a recognized ExitPlanMode prompt) keep the card so the user can retry
+    // or fall back to the terminal; the parent surfaces the error as a toast.
+    onSubmit(choice)
+      .then(() => {
+        _dismissedPlan.add(blockId);
+        _planPersist(_dismissedPlan);
+        setDismissed(true);
+      })
+      .catch(() => {
+        setConfirm(null);
+      });
   };
+
+  const hasOptions = !!options && options.length > 0;
 
   const baseBtn: React.CSSProperties = {
     fontSize: 12, padding: "5px 14px", borderRadius: 5, cursor: "pointer", fontWeight: 600, border: "1px solid transparent",
@@ -1786,25 +1820,85 @@ function PlanApprovalBlock({ blockId, planText, planPath, onSubmit }: {
               : "Plan body not available — approve to view via tool result"}
         </div>
       )}
-      {/* Actions */}
-      <div style={{ padding: "8px 14px", display: "flex", gap: 8, justifyContent: "flex-end" }}>
-        {confirm === "none" && (
-          <>
-            <button onClick={() => setConfirm("reject")} style={{ ...baseBtn, background: "#3a1a1a", color: "#f87171", borderColor: "#7f1d1d" }}>Reject</button>
-            <button onClick={() => setConfirm("approve")} style={{ ...baseBtn, background: "#1a3a1a", color: "#4ade80", borderColor: "#166534" }}>Approve ✓</button>
-          </>
+      {/* Actions. When the live TUI menu options are known (tui_plan_data) we
+          render them verbatim, like AskUserQuestion — so the user can pick any
+          real option, not just a binary approve/reject. Otherwise we fall back
+          to the legacy Approve/Reject intent pair. */}
+      <div style={{ padding: "8px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
+        {/* Confirmation step (shared by option + legacy paths). When the pending
+            choice opens the "Tell Claude what to change" field, collect freeform
+            text and send it along; otherwise it's a simple confirm. */}
+        {confirm !== null && (() => {
+          const wantsFeedback = confirm.kind === "opt" ? isTellClaudeLabel(confirm.label) : confirm.decision === "reject";
+          const payload: PlanChoice = confirm.kind === "opt"
+            ? { label: confirm.label, index: confirm.index }
+            : { decision: confirm.decision };
+          if (wantsFeedback) payload.feedback = feedback.trim();
+          const fire = () => submit(payload);
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
+                {wantsFeedback
+                  ? <>告诉 Claude 要改什么（留空则仅退回继续规划）：</>
+                  : <>Send: <b style={{ color: "#c4b5fd" }}>{confirm.kind === "opt" ? confirm.label : confirm.decision === "approve" ? "Approve" : "Reject"}</b>?</>}
+              </span>
+              {wantsFeedback && (
+                <textarea
+                  autoFocus
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); fire(); } }}
+                  placeholder="例如：把缓存层换成 Redis，并补上失败重试…（⌘/Ctrl+Enter 发送）"
+                  rows={3}
+                  style={{
+                    width: "100%", boxSizing: "border-box", resize: "vertical",
+                    fontSize: 13, lineHeight: 1.5, padding: "7px 9px", borderRadius: 6,
+                    background: "var(--bg-input, #0f0a1e)", color: "var(--text-primary)",
+                    border: "1px solid #4c1d95", fontFamily: "inherit",
+                  }}
+                />
+              )}
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => setConfirm(null)} style={{ ...baseBtn, background: "var(--bg-hover)", color: "var(--text-secondary)", borderColor: "var(--border)" }}>Cancel</button>
+                <button onClick={fire} style={{ ...baseBtn, background: "#1a2a3a", color: "#93c5fd", borderColor: "#1e40af" }}>
+                  {wantsFeedback ? "发送给 Claude" : "Confirm"}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Option list (real TUI menu) */}
+        {confirm === null && hasOptions && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {options!.map((o) => {
+              const approve = isApproveLabel(o.label);
+              return (
+                <button
+                  key={o.index}
+                  onClick={() => setConfirm({ kind: "opt", index: o.index, label: o.label })}
+                  style={{
+                    ...baseBtn,
+                    textAlign: "left",
+                    fontWeight: 500,
+                    background: approve ? "#13240f" : "#241010",
+                    color: approve ? "#86efac" : "#fca5a5",
+                    borderColor: approve ? "#166534" : "#7f1d1d",
+                  }}
+                >
+                  {o.highlighted ? "❯ " : ""}{o.label}
+                </button>
+              );
+            })}
+          </div>
         )}
-        {confirm === "approve" && (
-          <>
-            <button onClick={() => setConfirm("none")} style={{ ...baseBtn, background: "var(--bg-hover)", color: "var(--text-secondary)", borderColor: "var(--border)" }}>Cancel</button>
-            <button onClick={() => submit("approve")} style={{ ...baseBtn, background: "#1a3a1a", color: "#4ade80", borderColor: "#166534" }}>Confirm Approve ✓</button>
-          </>
-        )}
-        {confirm === "reject" && (
-          <>
-            <button onClick={() => setConfirm("none")} style={{ ...baseBtn, background: "var(--bg-hover)", color: "var(--text-secondary)", borderColor: "var(--border)" }}>Cancel</button>
-            <button onClick={() => submit("reject")} style={{ ...baseBtn, background: "#3a1a1a", color: "#f87171", borderColor: "#7f1d1d" }}>Confirm Reject</button>
-          </>
+
+        {/* Legacy fallback when the live menu isn't available */}
+        {confirm === null && !hasOptions && (
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={() => setConfirm({ kind: "legacy", decision: "reject" })} style={{ ...baseBtn, background: "#3a1a1a", color: "#f87171", borderColor: "#7f1d1d" }}>Reject</button>
+            <button onClick={() => setConfirm({ kind: "legacy", decision: "approve" })} style={{ ...baseBtn, background: "#1a3a1a", color: "#4ade80", borderColor: "#166534" }}>Approve ✓</button>
+          </div>
         )}
       </div>
     </div>
@@ -3663,6 +3757,9 @@ interface Props {
   pendingAuqData?: PendingAuqData | null;
   /** Tool approval data from hooks — shown when Claude is waiting for permission. */
   pendingApproveData?: { tool_name: string; tool_input: Record<string, unknown> } | null;
+  /** Live ExitPlanMode menu options parsed from the screen — lets the plan card
+   *  render the real menu items (like AUQ) instead of a binary Approve/Reject. */
+  pendingPlanData?: { options?: PlanMenuOption[] } | null;
   /** When true, poll JSONL aggressively until an unanswered AUQ block appears. */
   isWaitingForAuq?: boolean;
   /** Ref that receives a function to send Ctrl+C (interrupt current response). */
@@ -3788,7 +3885,7 @@ function mergeRawDelta(prev: RawMessage[], delta: RawMessage[]): RawMessage[] | 
   return out;
 }
 
-export function ConversationPane({ sessionId, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, isWaitingForAuq = false, stopRef, refreshRef }: Props) {
+export function ConversationPane({ sessionId, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, pendingPlanData, isWaitingForAuq = false, stopRef, refreshRef }: Props) {
   // Codex app-server transport: no tmux, no terminal WS. The parent (SessionsPage)
   // owns input via CodexChatInput → POST /codex-message. We must short-circuit the
   // WS attach effect AND the internal textarea or the user sees two input bars
@@ -4905,10 +5002,23 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
               // which matched no option — the trailing Enter then submitted
               // the modal's default-highlighted option 1 (approve + bypass
               // perms), so Reject was silently approving.
-              const submitPlanDecision = (decision: "approve" | "reject") => {
-                approvePlan(sessionId, decision).catch(() => {});
-                stickToBottom.current = true;
-                requestAnimationFrame(() => scrollToBottom(true));
+              const submitPlanDecision = (choice: PlanChoice) => {
+                return approvePlan(sessionId, choice)
+                  .then(() => {
+                    stickToBottom.current = true;
+                    requestAnimationFrame(() => scrollToBottom(true));
+                  })
+                  .catch((e: unknown) => {
+                    // Backend refused (e.g. 409: no recognized ExitPlanMode menu on
+                    // screen). Surface it instead of silently swallowing, and rethrow
+                    // so PlanApprovalBlock keeps the card visible for retry.
+                    const msg = e instanceof Error ? e.message : String(e);
+                    const what = choice.label ?? (choice.decision === "approve" ? "批准" : choice.decision === "reject" ? "拒绝" : "选项");
+                    setLostToast(`Plan「${what}」失败：${msg}（请在终端中手动确认）`);
+                    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+                    toastTimerRef.current = setTimeout(() => { setLostToast(null); toastTimerRef.current = null; }, 4000);
+                    throw e;
+                  });
               };
 
               // ExitPlanMode (unanswered) — show plan approval card. Runs
@@ -4943,6 +5053,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
                         blockId={exitPlanBlock.id!}
                         planText={planText}
                         planPath={planPath}
+                        options={pendingPlanData?.options}
                         onSubmit={submitPlanDecision}
                       />
                     </React.Fragment>
