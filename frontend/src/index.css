@@ -1,0 +1,326 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Theme variables ─────────────────────────────────────────────────────── */
+:root {
+  /* backgrounds — GitHub Dark Dimmed palette, less extreme than near-black */
+  --bg-page:    #1c2128;
+  --bg-base:    #22272e;
+  --bg-deep:    #1c2128;
+  --bg-surface: #2d333b;
+  --bg-sidebar: #22272e;
+  --bg-modal:   #2d333b;
+  --bg-hover:   #373e47;
+  --btn-icon-bg: #444c56;
+  /* borders */
+  --border:        #444c56;
+  --border-subtle: #373e47;
+  --border-strong: #545d68;
+  /* text — softer than near-white, easier on dark bg */
+  --text-bright:   #cdd9e5;
+  --text-body:     #adbac7;
+  --text-primary:  #adbac7;
+  --text-secondary:#768390;
+  --text-muted:    #636e7b;
+  --text-faint:    #545d68;
+  --text-faintest: #444c56;
+  /* accents */
+  --accent-blue:  #539bf5;
+  --accent-green: #57ab5a;
+  --accent-red:   #e5534b;
+  --accent-amber: #c69026;
+  /* inline code color — theme-aware so contrast holds in both modes */
+  --code-inline-color: #e879f9;
+  /* diff */
+  --diff-del-bg:     #3c1f1e;
+  --diff-del-text:   #f47067;
+  --diff-del-prefix: #872e28;
+  --diff-add-bg:     #1b2f23;
+  --diff-add-text:   #57ab5a;
+  --diff-add-prefix: #2a5b30;
+}
+
+[data-theme="light"] {
+  /* backgrounds — warm off-white, no pure #ffffff */
+  --bg-page:    #f4f2ee;
+  --bg-base:    #faf9f7;
+  --bg-deep:    #eeece8;
+  --bg-surface: #eeece8;
+  --bg-sidebar: #f0eeea;
+  --bg-modal:   #faf9f7;
+  --bg-hover:   #e6e4e0;
+  --btn-icon-bg: #6b7280;
+  --border:        #cbc8c2;
+  --border-subtle: #d9d6d0;
+  --border-strong: #b0ada8;
+  --text-bright:   #1c1e24;
+  --text-body:     #30333c;
+  --text-primary:  #30333c;
+  --text-secondary:#50545f;
+  --text-muted:    #6b6f7b;
+  --text-faint:    #868a96;
+  --text-faintest: #a0a4ae;
+  --accent-blue:  #1a6fd4;
+  --accent-green: #1c7a36;
+  --accent-red:   #c82828;
+  --accent-amber: #8f6000;
+  --code-inline-color: #7c3aed;
+  --diff-del-bg:     #fde8e6;
+  --diff-del-text:   #c0392b;
+  --diff-del-prefix: #8e1c14;
+  --diff-add-bg:     #e4f5e8;
+  --diff-add-text:   #1a7a35;
+  --diff-add-prefix: #145526;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  background: var(--bg-page);
+  color: var(--text-body);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+
+button:hover {
+  opacity: 0.85;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Completely suppress right-click context menu in terminal */
+.xterm-helper-textarea {
+  pointer-events: none !important;
+}
+
+/* xterm.js scrollbar */
+.xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+.xterm-viewport::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+  border: 2px solid var(--bg-base);
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+@keyframes streaming-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px #22c55e; }
+  50%       { opacity: 0.3; box-shadow: 0 0 2px 0px #22c55e; }
+}
+
+@keyframes new-output-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px #ef4444; }
+  50%       { opacity: 0.3; box-shadow: 0 0 2px 0px #ef4444; }
+}
+
+.streaming-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+  animation: streaming-pulse 0.8s ease-in-out infinite;
+}
+
+.new-output-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+  animation: new-output-pulse 1.2s ease-in-out infinite;
+}
+
+/* Markdown preview */
+.md-preview h1, .md-preview h2, .md-preview h3, .md-preview h4 {
+  color: var(--text-bright);
+  margin: 1em 0 0.4em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.2em;
+}
+.md-preview p { margin: 0.6em 0; }
+.md-preview a { color: var(--accent-blue); }
+.md-preview code {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: "Cascadia Code", "Fira Code", Menlo, Monaco, monospace;
+  font-size: 0.9em;
+}
+.md-preview pre {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 12px 16px;
+  overflow: auto;
+  margin: 0.8em 0;
+}
+.md-preview pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.md-preview blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 12px;
+  color: var(--text-secondary);
+  margin: 0.8em 0;
+}
+.md-preview ul, .md-preview ol { padding-left: 1.5em; margin: 0.6em 0; }
+.md-preview li { margin: 0.2em 0; }
+.md-preview table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
+.md-preview th, .md-preview td { border: 1px solid var(--border-strong); padding: 6px 12px; }
+.md-preview th { background: var(--bg-surface); }
+
+/* ── ConversationPane markdown ─────────────────────────────────────── */
+.conv-markdown p { margin: 0.3em 0; }
+.conv-markdown p:first-child { margin-top: 0; }
+.conv-markdown p:last-child { margin-bottom: 0; }
+.conv-markdown h1, .conv-markdown h2, .conv-markdown h3 {
+  font-size: 1em; font-weight: 700; margin: 0.5em 0 0.2em; color: var(--text-bright);
+}
+.conv-markdown ul, .conv-markdown ol { padding-left: 1.4em; margin: 0.3em 0; }
+.conv-markdown li { margin: 0.15em 0; }
+.conv-code-block {
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; overflow-x: auto; margin: 0.5em 0;
+  font-family: "Ubuntu Sans Mono", monospace; font-size: 12px; line-height: 1.55;
+}
+.conv-code-block code { background: none; border: none; padding: 0; color: var(--text-primary); }
+.mermaid-block {
+  display: flex; justify-content: center; margin: 0.6em 0;
+  padding: 8px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px;
+  overflow-x: auto;
+}
+.mermaid-block svg { max-width: 100%; height: auto; }
+.mermaid-error {
+  background: rgba(248, 113, 113, 0.08); color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.3); border-radius: 4px;
+  padding: 8px 10px; font-size: 12px; white-space: pre-wrap; overflow-x: auto;
+}
+.conv-code-inline {
+  background: var(--border); border-radius: 3px; padding: 1px 5px;
+  font-family: "Ubuntu Sans Mono", monospace; font-size: 0.88em; color: var(--code-inline-color);
+}
+.conv-markdown blockquote {
+  border-left: 3px solid var(--border-strong); padding-left: 10px; color: var(--text-secondary); margin: 0.4em 0;
+}
+.conv-markdown a { color: var(--accent-blue); }
+.conv-markdown strong { color: var(--text-bright); }
+.conv-markdown table {
+  border-collapse: collapse; width: 100%; margin: 0.5em 0;
+  font-family: "Ubuntu Sans Mono", monospace; font-size: 12px;
+}
+.conv-markdown th, .conv-markdown td {
+  border: 1px solid var(--border-strong); padding: 5px 12px; text-align: left; color: var(--text-primary);
+}
+.conv-markdown th { background: var(--bg-surface); color: var(--text-bright); font-weight: 700; }
+.conv-markdown tr:nth-child(even) td { background: var(--bg-base); }
+.conv-markdown tr:hover td { background: var(--bg-surface); }
+
+/* Thinking block animations */
+@keyframes stop-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 5px 2px #f97316; }
+  50%       { opacity: 0.6; box-shadow: 0 0 2px 0px #f97316; }
+}
+.stop-pulse { animation: stop-pulse 1s ease-in-out infinite; }
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+@keyframes thinking-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.thinking-pulse { animation: thinking-pulse 1.6s ease-in-out infinite; }
+.thinking-cursor { animation: thinking-blink 1s step-end infinite; color: var(--accent-amber); font-style: normal; }
+
+/* SessionCard attention badge: prominent red banner pulsing at ~1.2 Hz to
+   draw the eye when a session has work waiting for the user (AUQ, plan
+   approval, tool approval). Animates background + shadow together so the
+   banner reads from a peripheral glance, not just up close. */
+@keyframes attention-pulse {
+  0%, 100% { background: #dc2626; box-shadow: 0 0 8px 1px rgba(220,38,38,0.55); }
+  50%      { background: #ef4444; box-shadow: 0 0 14px 4px rgba(239,68,68,0.85); }
+}
+.attention-banner { animation: attention-pulse 1.2s ease-in-out infinite; }
+
+/* hljs in CodeBlock */
+.hljs { background: none; padding: 0; }
+
+/* hljs light-theme overrides */
+[data-theme="light"] .hljs { color: #24292e; }
+[data-theme="light"] .hljs-keyword,
+[data-theme="light"] .hljs-selector-tag,
+[data-theme="light"] .hljs-deletion { color: #d73a49; }
+[data-theme="light"] .hljs-string,
+[data-theme="light"] .hljs-attr,
+[data-theme="light"] .hljs-addition { color: #032f62; }
+[data-theme="light"] .hljs-comment,
+[data-theme="light"] .hljs-quote { color: #6a737d; font-style: italic; }
+[data-theme="light"] .hljs-number,
+[data-theme="light"] .hljs-literal,
+[data-theme="light"] .hljs-variable,
+[data-theme="light"] .hljs-template-variable { color: #005cc5; }
+[data-theme="light"] .hljs-title,
+[data-theme="light"] .hljs-function,
+[data-theme="light"] .hljs-section { color: #6f42c1; }
+[data-theme="light"] .hljs-type,
+[data-theme="light"] .hljs-class { color: #6f42c1; }
+[data-theme="light"] .hljs-built_in { color: #e36209; }
+[data-theme="light"] .hljs-name,
+[data-theme="light"] .hljs-tag { color: #22863a; }
+[data-theme="light"] .hljs-attribute { color: #005cc5; }
+
+/* ── Caps modal markdown preview ─────────────────────────────────────────── */
+.caps-md-preview h1,.caps-md-preview h2,.caps-md-preview h3{color:#e6edf3;margin:1em 0 0.4em;font-weight:600}
+.caps-md-preview h1{font-size:1.4em;border-bottom:1px solid #21262d;padding-bottom:0.3em}
+.caps-md-preview h2{font-size:1.2em}.caps-md-preview h3{font-size:1.05em}
+.caps-md-preview p{margin:0.6em 0;color:#c9d1d9}
+.caps-md-preview ul,.caps-md-preview ol{padding-left:1.4em;margin:0.4em 0;color:#c9d1d9}
+.caps-md-preview li{margin:0.2em 0}
+.caps-md-preview code{background:#161b22;border-radius:4px;padding:1px 5px;font-size:.88em;color:#a5d6ff;font-family:'Ubuntu Sans Mono',monospace}
+.caps-md-preview pre{background:#161b22;border-radius:6px;padding:10px 12px;overflow-x:auto;margin:0.6em 0}
+.caps-md-preview pre code{background:none;padding:0;font-size:12px;color:#c9d1d9}
+.caps-md-preview blockquote{border-left:3px solid #30363d;margin:.5em 0;padding-left:.8em;color:#8b949e}
+.caps-md-preview hr{border:none;border-top:1px solid #21262d;margin:1em 0}
+.caps-md-preview strong{color:#e6edf3;font-weight:600}
+.caps-md-preview a{color:#58a6ff;text-decoration:none}
+.caps-md-preview table{border-collapse:collapse;width:100%;margin:.6em 0}
+.caps-md-preview th,.caps-md-preview td{border:1px solid #30363d;padding:5px 10px;font-size:13px}
+.caps-md-preview th{background:#161b22;color:#8b949e}

@@ -1,0 +1,109 @@
+# Dependencies
+**/node_modules/
+vendor/
+.pnp/
+.pnp.js
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Build outputs
+dist/
+build/
+.next/
+.nuxt/
+out/
+target/
+*.class
+
+# Large model / data files
+*.bin
+*.weights
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.parquet
+*.arrow
+*.safetensors
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.rar
+*.7z
+
+# Media
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.mp3
+*.wav
+*.flac
+
+# Logs & temp
+*.log
+*.tmp
+*.swp
+*.swo
+.cache/
+tmp/
+temp/
+
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.user
+
+# ClaudeManager runtime
+.claude/
+
+# ── Go backend ────────────────────────────────────────────────────────────
+/bin/
+*.test
+goclaudemanager
+/data/
+/run/
+
+# Embedded SPA bundle: the `dist/` rule above hides internal/web/dist, but the
+# placeholder must stay tracked so `go build` works on a fresh clone. Re-include
+# the placeholder; keep the real content-hashed Vite output ignored.
+!internal/web/dist/
+!internal/web/dist/index.html
+internal/web/dist/assets/*
+!internal/web/dist/assets/.gitkeep
+
+# Added by ClaudeManager (large untracked dirs)
