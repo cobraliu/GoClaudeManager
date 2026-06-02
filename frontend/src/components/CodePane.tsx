@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, createContext, useContext } from "react";
 import hljs from "highlight.js/lib/common";
 import { marked } from "../lib/markdown";
 import {
   getCodeChangedFiles, getCodeFile,
-  listFiles, fetchRawFileBlob,
+  listFiles, dirStat, fetchRawFileBlob,
   getGitInfo,
   searchFiles, createDir, uploadFile, renameEntry, moveEntry, deleteEntry, writeFile, FileWriteConflictError,
   downloadFile, downloadDirZip, getDirInfo, readFile,
@@ -151,6 +151,75 @@ import { HtmlViewer } from "./HtmlViewer";
 
 // ── File tree ─────────────────────────────────────────────────────────────
 
+// Expanded-directory watch: each currently-open directory node registers its
+// path; the host polls ALL of them in a single cheap `dirstat` request (mtimes
+// only, no entries) and bumps refreshKey when any changed, so the tree re-lists
+// just the expanded dirs and we never re-transfer unchanged listings. This is
+// the lightweight stand-in for the (unimplemented) fs/watch websocket.
+const EXPANDED_DIR_WATCH_MS = 4000;
+
+interface ExpandedDirWatch {
+  register: (path: string) => void;
+  unregister: (path: string) => void;
+}
+const ExpandedDirWatchContext = createContext<ExpandedDirWatch | null>(null);
+
+// useExpandedDirWatch owns the open-dir registry + the batched mtime poll. It
+// calls onChanged() (which the host wires to bump filesRefreshKey) whenever a
+// registered directory's mtime changes — i.e. a file/dir was added, removed, or
+// renamed inside a visible directory.
+function useExpandedDirWatch(sessionId: string, onChanged: () => void): ExpandedDirWatch {
+  const openDirsRef = useRef<Set<string>>(new Set());
+  const mtimeRef = useRef<Map<string, number>>(new Map());
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+
+  const ctx = useMemo<ExpandedDirWatch>(() => ({
+    register: (p) => { openDirsRef.current.add(p); },
+    // Keep the last-seen mtime after collapse so re-expanding a directory that
+    // changed while it was closed detects the change on the next poll (the dir
+    // stays loaded, so it would otherwise show stale entries until manual
+    // refresh). Stale entries for closed dirs are cleared on session reset.
+    unregister: (p) => { openDirsRef.current.delete(p); },
+  }), []);
+
+  useEffect(() => {
+    // Reset across sessions.
+    openDirsRef.current = new Set();
+    mtimeRef.current = new Map();
+    let alive = true;
+    const tick = async () => {
+      const paths = [...openDirsRef.current];
+      if (paths.length === 0) return;
+      try {
+        const { stats } = await dirStat(sessionId, paths);
+        if (!alive) return;
+        let changed = false;
+        for (const p of paths) {
+          const next = stats[p]; // undefined → gone/non-dir
+          const prev = mtimeRef.current.get(p);
+          if (prev === undefined) {
+            // First observation after expand — seed without firing (we just
+            // listed it on open).
+            if (next !== undefined) mtimeRef.current.set(p, next);
+            continue;
+          }
+          if (next !== prev) {
+            changed = true;
+            if (next === undefined) mtimeRef.current.delete(p);
+            else mtimeRef.current.set(p, next);
+          }
+        }
+        if (changed) onChangedRef.current();
+      } catch { /* ignore — backstop poll covers gaps */ }
+    };
+    const id = setInterval(tick, EXPANDED_DIR_WATCH_MS);
+    return () => { alive = false; clearInterval(id); };
+  }, [sessionId]);
+
+  return ctx;
+}
+
 interface DirState {
   entries: FileEntry[];
   loaded: boolean;
@@ -210,6 +279,15 @@ function FileTreeDir({
       setState((s) => ({ ...s, entries: res.entries }));
     }).catch(() => {});
   }, [refreshKey, showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Register with the expanded-dir watch while open+loaded so the host's batched
+  // mtime poll covers this directory (and re-lists it via refreshKey on change).
+  const dirWatch = useContext(ExpandedDirWatchContext);
+  useEffect(() => {
+    if (!dirWatch || !state.open || !state.loaded) return;
+    dirWatch.register(entry.path);
+    return () => dirWatch.unregister(entry.path);
+  }, [dirWatch, state.open, state.loaded, entry.path]);
 
   const indent = depth * 14 + 6;
   const isChanged = changed.has(entry.path);
@@ -317,10 +395,31 @@ function FileTree({
 }) {
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
 
+  // Session change → full reset (show Loading, then load root).
   useEffect(() => {
     setEntries(null);
     listFiles(sessionId, undefined, showHidden).then((r) => setEntries(r.entries)).catch(() => setEntries([]));
-  }, [sessionId, refreshKey, showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // refreshKey / showHidden change → re-list IN PLACE. Crucially we do NOT reset
+  // entries to null here: nulling unmounts every child FileTreeDir, which would
+  // remount collapsed and wipe the user's expanded state on every refresh.
+  // React reconciles children by `path`, so updating entries preserves the open
+  // state of directories that still exist.
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) { firstRender.current = false; return; }
+    listFiles(sessionId, undefined, showHidden).then((r) => setEntries(r.entries)).catch(() => {});
+  }, [refreshKey, showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Register the root ("") with the expanded-dir watch so top-level additions
+  // (a new file at the project root) are detected by the batched mtime poll.
+  const dirWatch = useContext(ExpandedDirWatchContext);
+  useEffect(() => {
+    if (!dirWatch) return;
+    dirWatch.register("");
+    return () => dirWatch.unregister("");
+  }, [dirWatch]);
 
   if (entries === null) return <div style={{ padding: "8px 12px", color: "var(--text-faint)", fontSize: 11 }}>Loading…</div>;
   if (entries.length === 0) return <div style={{ padding: "8px 12px", color: "var(--text-faint)", fontSize: 11 }}>Empty</div>;
@@ -1156,6 +1255,7 @@ export function FileSidePanel({
   const [filesRefreshKey, setFilesRefreshKey] = useState(0);
   const prevChangedRef = useRef<Set<string>>(new Set());
   const pollChangesRef = useRef<() => Promise<void>>(async () => {});
+  const dirWatch = useExpandedDirWatch(sessionId, () => setFilesRefreshKey((k) => k + 1));
 
   useEffect(() => {
     let mounted = true;
@@ -1230,7 +1330,9 @@ export function FileSidePanel({
             iconOnly={sideCollapse}
           />
         </div>
-        <FileTree sessionId={sessionId} selected={selectedPath} changed={changedSet} onSelect={handleSelect} revealPath={selectedPath} refreshKey={filesRefreshKey} />
+        <ExpandedDirWatchContext.Provider value={dirWatch}>
+          <FileTree sessionId={sessionId} selected={selectedPath} changed={changedSet} onSelect={handleSelect} revealPath={selectedPath} refreshKey={filesRefreshKey} />
+        </ExpandedDirWatchContext.Provider>
       </div>
       {/* Changes (middle) */}
       <div style={{ borderTop: "1px solid var(--bg-hover)", flexShrink: 0 }}>
@@ -2278,6 +2380,7 @@ export function CodePane({
   const [viewMode, setViewMode] = useState<"full" | "diff" | "split">("full");
   const [mdPreview, setMdPreview] = useState(true);
   const [filesRefreshKey, setFilesRefreshKey] = useState(0);
+  const codeDirWatch = useExpandedDirWatch(sessionId, () => setFilesRefreshKey((k) => k + 1));
   // false when file was opened from FILES (plain view, no diff UI)
   const [selectedFromChanges, setSelectedFromChanges] = useState(true);
 
@@ -2754,16 +2857,18 @@ export function CodePane({
                 ))
               )
             ) : (
-              <FileTree
-                sessionId={sessionId}
-                selected={highlightedPath}
-                changed={changedSet}
-                onSelect={handleSelect}
-                onEntryContextMenu={onEntryContextMenu}
-                revealPath={highlightedPath}
-                refreshKey={filesRefreshKey}
-                showHidden={showHidden}
-              />
+              <ExpandedDirWatchContext.Provider value={codeDirWatch}>
+                <FileTree
+                  sessionId={sessionId}
+                  selected={highlightedPath}
+                  changed={changedSet}
+                  onSelect={handleSelect}
+                  onEntryContextMenu={onEntryContextMenu}
+                  revealPath={highlightedPath}
+                  refreshKey={filesRefreshKey}
+                  showHidden={showHidden}
+                />
+              </ExpandedDirWatchContext.Provider>
             )}
           </div>
 

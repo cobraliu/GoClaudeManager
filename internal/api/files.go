@@ -75,6 +75,7 @@ var filesExtSanitizeRE = regexp.MustCompile(`[^A-Za-z0-9]`)
 func registerFilesRoutes(r chi.Router, d Deps) {
 	// Read-only (backed by fsutil where possible).
 	r.Get("/{id}/fs/list", func(w http.ResponseWriter, req *http.Request) { fsList(d, w, req) })
+	r.Post("/{id}/fs/dirstat", func(w http.ResponseWriter, req *http.Request) { fsDirStat(d, w, req) })
 	r.Get("/{id}/fs/search", func(w http.ResponseWriter, req *http.Request) { fsSearch(d, w, req) })
 	r.Get("/{id}/fs/read", func(w http.ResponseWriter, req *http.Request) { fsRead(d, w, req) })
 	r.Get("/{id}/fs/raw", func(w http.ResponseWriter, req *http.Request) { fsRaw(d, w, req) })
@@ -137,6 +138,49 @@ func filesIsArchiveName(name string) bool {
 		}
 	}
 	return false
+}
+
+// ── POST /{id}/fs/dirstat ────────────────────────────────────────────────────
+//
+// Cheap change-detection for the file tree. Returns each requested directory's
+// mtime (Unix nanoseconds) WITHOUT reading its entries. Adding, removing, or
+// renaming an entry bumps the containing directory's mtime (POSIX), so the
+// client polls this for its currently-expanded directories and only re-fetches
+// the full listing (fs/list) for directories whose mtime changed. Steady-state
+// polling is thus one tiny request instead of re-transferring every expanded
+// directory's contents. (Pure file-content edits don't change a directory's
+// mtime, which is fine — they don't change the listing.) Missing/non-dir paths
+// are omitted; the client treats an omitted path as changed/gone.
+type fsDirStatReq struct {
+	Paths []string `json:"paths"`
+}
+
+func fsDirStat(d Deps, w http.ResponseWriter, r *http.Request) {
+	s := resolveOwned(d, w, r)
+	if s == nil {
+		return
+	}
+	var body fsDirStatReq
+	if !readJSON(w, r, &body) {
+		return
+	}
+	const maxPaths = 1000
+	if len(body.Paths) > maxPaths {
+		body.Paths = body.Paths[:maxPaths]
+	}
+	stats := make(map[string]int64, len(body.Paths))
+	for _, rel := range body.Paths {
+		target, err := fsutil.SafePath(s.Cwd, rel)
+		if err != nil {
+			continue // traversal → skip (don't leak which paths are rejected)
+		}
+		info, err := os.Stat(target)
+		if err != nil || !info.IsDir() {
+			continue // gone or not a dir → omit; client re-lists/handles
+		}
+		stats[rel] = info.ModTime().UnixNano()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stats": stats})
 }
 
 // ── GET /{id}/fs/list ────────────────────────────────────────────────────────

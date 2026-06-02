@@ -646,6 +646,20 @@ export function listFiles(
   return request(`/api/sessions/${sessionId}/fs/list${qs}`);
 }
 
+// dirStat returns the mtime (Unix nanoseconds) of each given directory WITHOUT
+// reading its contents — a cheap change probe for the file tree. Omitted paths
+// are gone/non-dirs. The file tree polls this for its expanded directories and
+// only re-fetches the full listing for ones whose mtime changed.
+export function dirStat(
+  sessionId: string,
+  paths: string[],
+): Promise<{ stats: Record<string, number> }> {
+  return request(`/api/sessions/${sessionId}/fs/dirstat`, {
+    method: "POST",
+    body: JSON.stringify({ paths }),
+  });
+}
+
 export interface SqliteInfo {
   tables: string[];
   columns: string[];
