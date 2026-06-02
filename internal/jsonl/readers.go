@@ -352,8 +352,8 @@ func listAUQsPath(jsonlPath string) ([]AUQ, error) {
 			}
 			ts := parseISOTs(d.Timestamp)
 			asks[matched].AnsweredTs = &ts
-			if d.ToolUseResult != nil && d.ToolUseResult.Answers != nil {
-				asks[matched].Answers = d.ToolUseResult.Answers
+			if ans := d.toolUseResultAnswers(); ans != nil {
+				asks[matched].Answers = ans
 			}
 		}
 	}

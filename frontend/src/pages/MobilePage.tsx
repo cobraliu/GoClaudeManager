@@ -99,6 +99,7 @@ import {
   type UsageInfo,
   type TuiAuqData,
   type TuiApproveData,
+  type LostMessage,
   getUsageInfo,
   createShare,
   listShares,
@@ -5043,6 +5044,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
   const [tuiHintDismissed, setTuiHintDismissed] = useState(false);
   const [tuiAuqData, setTuiAuqData] = useState<TuiAuqData | null>(null);
   const [tuiApproveData, setTuiApproveData] = useState<TuiApproveData | null>(null);
+  const [lostMessages, setLostMessages] = useState<LostMessage[]>([]);
   const [compactingProgress, setCompactingProgress] = useState<string | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
   const tuiSendRawRef = useRef<((data: string) => void) | null>(null);
@@ -5162,6 +5164,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
           });
           setTuiAuqData(st.tui_auq_data ?? null);
           setTuiApproveData(st.tui_approve_data ?? null);
+          setLostMessages(st.lost_messages ?? []);
           setIsCompacting(!!st.is_compacting);
           setCompactingProgress(st.compacting_progress ?? null);
         }
@@ -5479,6 +5482,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
           isWaitingForAuq={!!tuiHint?.includes("asking a question")}
           pendingAuqData={tuiAuqData}
           pendingApproveData={tuiApproveData}
+          lostMessages={lostMessages}
           stopRef={stopResponseRef}
           refreshRef={convRefreshRef}
         />
@@ -5887,6 +5891,62 @@ function MobileSharePanel({ open, onClose, session }: { open: boolean; onClose: 
   );
 }
 
+// AttentionKind mirrors SessionsPage's priority ordering (plan > auq > approve).
+type MobileAttentionKind = "plan" | "auq" | "approve";
+interface MobileAttentionItem { id: string; name: string; kind: MobileAttentionKind }
+
+const _ATTENTION_LABEL: Record<MobileAttentionKind, string> = {
+  plan: "Plan 待批准",
+  auq: "待回答问题",
+  approve: "待授权",
+};
+
+// MobileAttentionBanner is the cross-session jump notification: while operating
+// session B, it surfaces that session A needs an answer and lets the user tap to
+// jump there (rather than handling A's AUQ inline in B's page). It floats above
+// the bottom of the screen in both ListView and DetailView.
+function MobileAttentionBanner({ items, onJump }: { items: MobileAttentionItem[]; onJump: (id: string) => void }) {
+  if (items.length === 0) return null;
+  const shown = items.slice(0, 3);
+  const extra = items.length - shown.length;
+  return (
+    <div style={{
+      position: "fixed", left: 8, right: 8, bottom: 8, zIndex: 9999,
+      display: "flex", flexDirection: "column", gap: 4,
+      pointerEvents: "none",
+    }}>
+      {shown.map((it) => (
+        <button
+          key={it.id}
+          onClick={() => onJump(it.id)}
+          style={{
+            pointerEvents: "auto",
+            display: "flex", alignItems: "center", gap: 8,
+            width: "100%", textAlign: "left",
+            padding: "10px 14px", borderRadius: 10,
+            background: "color-mix(in srgb, var(--accent-orange, #d59f00) 22%, var(--bg-surface))",
+            border: "1px solid color-mix(in srgb, var(--accent-orange, #d59f00) 55%, transparent)",
+            color: "var(--text-default)", fontSize: 13, fontWeight: 600,
+            cursor: "pointer", boxShadow: "0 2px 10px rgba(0,0,0,0.25)",
+          }}
+        >
+          <span>⚠️</span>
+          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {it.name} · {_ATTENTION_LABEL[it.kind]}
+          </span>
+          <span style={{ fontSize: 11, color: "var(--accent-orange, #d59f00)" }}>点击跳转 ›</span>
+        </button>
+      ))}
+      {extra > 0 && (
+        <div style={{
+          pointerEvents: "auto", textAlign: "center", fontSize: 11,
+          color: "var(--text-faint)", padding: "2px 0",
+        }}>还有 {extra} 个会话需要处理</div>
+      )}
+    </div>
+  );
+}
+
 export function MobilePage({ username, onLogout, onSwitchToAdmin, theme, onToggleTheme }: { username: string; onLogout: () => void; onSwitchToAdmin?: () => void; theme?: "dark" | "light"; onToggleTheme?: () => void }) {
   const [openSession, setOpenSession] = useState<SessionMeta | null>(null);
   const [terminalFont, setTerminalFontState] = useState<string | undefined>(undefined);
@@ -5925,8 +5985,73 @@ export function MobilePage({ username, onLogout, onSwitchToAdmin, theme, onToggl
     setOpenSession(null);
   };
 
-  if (openSession) return <DetailView session={openSession} onBack={closeDetail} username={username} onLogout={onLogout} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />;
-  return <ListView username={username} onLogout={onLogout} onOpen={openDetail} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />;
+  // ── Cross-session attention banner ─────────────────────────────────────────
+  // Poll all active sessions for pending plan/AUQ/approval and surface a tappable
+  // jump notification for any session OTHER than the one currently open. Riding
+  // the same 3s status poll means resolving on any client clears the banner here
+  // (consistent with the desktop AttentionNotifier and Part B auto-clear).
+  const [attention, setAttention] = useState<MobileAttentionItem[]>([]);
+  const sessionNamesRef = useRef<Map<string, string>>(new Map());
+  const openSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { openSessionIdRef.current = openSession?.id ?? null; }, [openSession]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await listSessionsStatus("active");
+        if (cancelled) return;
+        const pending: Array<{ id: string; kind: MobileAttentionKind }> = [];
+        for (const item of res.items) {
+          let kind: MobileAttentionKind | null = null;
+          if (item.tui_plan_pending) kind = "plan";
+          else if (item.tui_auq_data) kind = "auq";
+          else if (item.tui_approve_data) kind = "approve";
+          if (kind && item.id !== openSessionIdRef.current) pending.push({ id: item.id, kind });
+        }
+        // Resolve names; fetch the session list once if any id is unknown.
+        const missing = pending.some((p) => !sessionNamesRef.current.has(p.id));
+        if (missing) {
+          try {
+            const list = await listSessions();
+            if (cancelled) return;
+            for (const s of list.items) sessionNamesRef.current.set(s.id, s.name);
+          } catch { /* ignore — fall back to id */ }
+        }
+        const next = pending.map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          name: sessionNamesRef.current.get(p.id) || p.id.slice(0, 8),
+        }));
+        setAttention((prev) => {
+          if (prev.length === next.length && prev.every((p, i) => p.id === next[i].id && p.kind === next[i].kind)) {
+            return prev;
+          }
+          return next;
+        });
+      } catch { /* ignore */ }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  const jumpToSession = (id: string) => {
+    getSession(id).then((s) => openDetail(s)).catch(() => {});
+  };
+
+  // Re-filter at render so switching the open session hides its own banner item
+  // immediately (before the next poll re-derives the list).
+  const bannerItems = attention.filter((a) => a.id !== openSession?.id);
+
+  return (
+    <>
+      {openSession
+        ? <DetailView session={openSession} onBack={closeDetail} username={username} onLogout={onLogout} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />
+        : <ListView username={username} onLogout={onLogout} onOpen={openDetail} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />}
+      <MobileAttentionBanner items={bannerItems} onJump={jumpToSession} />
+    </>
+  );
 }
 
 /* ─── Shared micro styles ─── */

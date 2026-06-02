@@ -242,3 +242,41 @@ func TestAuqAnsweredInJSONLWindow(t *testing.T) {
 		t.Errorf("buried: got (%v,%v), want (false,true)", a, d)
 	}
 }
+
+// TestParsePlanMenu_RecognizesPlanNotToolApprove guards the discriminator that
+// status.go relies on after dropping the brittle "Claude has written up a plan"
+// header gate: a real ExitPlanMode menu must be recognized via its
+// plan-specific option phrasing (independent of header wording), while a
+// tool-use approval prompt must NOT be misclassified as a plan.
+func TestParsePlanMenu_RecognizesPlanNotToolApprove(t *testing.T) {
+	// A plan menu whose header is NOT the old literal string, exercising the
+	// version-robust structural recognition.
+	planScreen := strings.Join([]string{
+		"  Ready to code?",
+		"  ❯ 1. Yes, and auto-accept edits",
+		"    2. Yes, and manually approve edits",
+		"    3. No, keep planning",
+	}, "\n")
+	opts, hi, ok := ParsePlanMenu(planScreen)
+	if !ok {
+		t.Fatalf("expected plan menu to be recognized, got ok=false")
+	}
+	if len(opts) != 3 {
+		t.Fatalf("expected 3 options, got %d", len(opts))
+	}
+	if hi != 0 {
+		t.Fatalf("expected highlighted index 0, got %d", hi)
+	}
+
+	// A tool-use approval prompt: numbered options but NO plan phrasing and no
+	// "Would you like to proceed" → must not be treated as a plan.
+	approveScreen := strings.Join([]string{
+		"  Claude wants to use Bash",
+		"  ❯ 1. Yes",
+		"    2. Yes, and don't ask again for Bash commands",
+		"    3. No, and tell Claude what to do differently (Esc to cancel)",
+	}, "\n")
+	if _, _, ok := ParsePlanMenu(approveScreen); ok {
+		t.Fatalf("tool-approval prompt was misclassified as a plan menu")
+	}
+}

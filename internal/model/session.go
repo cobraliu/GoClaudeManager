@@ -108,6 +108,18 @@ type SessionStatusView struct {
 	TuiApproveData     map[string]any `json:"tui_approve_data"`
 	TuiPlanPending     bool           `json:"tui_plan_pending"`
 	TuiPlanData        map[string]any `json:"tui_plan_data"`
+	LostMessages       []LostMessage  `json:"lost_messages"`
+}
+
+// LostMessage is a prompt the client detected as never having reached the agent
+// (eaten by auto-compact, or a send timeout). It is registered server-side so
+// the "send failed" indicator is visible on — and dismissable from — every
+// connected client, not just the tab that sent it.
+type LostMessage struct {
+	ID        string  `json:"id"`
+	Text      string  `json:"text"`
+	SentAt    float64 `json:"sent_at"`
+	CreatedAt float64 `json:"created_at"`
 }
 
 // SessionStatusListResponse mirrors pydantic SessionStatusListResponse.

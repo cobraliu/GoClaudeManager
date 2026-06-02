@@ -27,8 +27,14 @@ type rawEntry struct {
 	Content   rawJSON         `json:"content"`   // queue-operation enqueue content (string)
 	Message   *rawMessage     `json:"message"`
 	Attachment *rawAttachment `json:"attachment"`
-	// toolUseResult lives at the top level on user tool_result entries (AUQ answers).
-	ToolUseResult *rawToolUseResult `json:"toolUseResult"`
+	// toolUseResult lives at the top level on user tool_result entries (AUQ
+	// answers). It is POLYMORPHIC: an object ({answers}/{plan,...}) on success
+	// but a plain STRING ("Error: ...") when the tool errored. Decode it lazily
+	// (rawJSON) so a string value can't fail the whole line — a rigid struct
+	// type here made decodeLine reject every errored tool_result entry, which
+	// silently dropped it from all derivations (e.g. an unclosed ExitPlanMode →
+	// phantom pending plan). See answers().
+	ToolUseResult rawJSON `json:"toolUseResult"`
 	// Cursor entries use a top-level role rather than message.role.
 	Role string `json:"role"`
 }
@@ -65,6 +71,20 @@ type rawAttachment struct {
 
 type rawToolUseResult struct {
 	Answers map[string]string `json:"answers"`
+}
+
+// toolUseResultAnswers decodes the (polymorphic) top-level toolUseResult and
+// returns its AUQ answers, or nil when it is absent, a string (errored tool), or
+// otherwise has no answers. Never fails the caller.
+func (d *rawEntry) toolUseResultAnswers() map[string]string {
+	if len(d.ToolUseResult) == 0 {
+		return nil
+	}
+	var r rawToolUseResult
+	if err := json.Unmarshal(d.ToolUseResult, &r); err != nil {
+		return nil
+	}
+	return r.Answers
 }
 
 // ── Public result types ─────────────────────────────────────────────────────

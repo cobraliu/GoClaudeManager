@@ -35,6 +35,7 @@ import {
   type TuiAuqData,
   type TuiApproveData,
   type TuiPlanData,
+  type LostMessage,
   type Goal,
   type TodoItem,
   type TodoPlan,
@@ -1443,6 +1444,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
   const [tuiAuqData, setTuiAuqData] = useState<TuiAuqData | null>(null);
   const [tuiApproveData, setTuiApproveData] = useState<TuiApproveData | null>(null);
   const [tuiPlanData, setTuiPlanData] = useState<TuiPlanData | null>(null);
+  const [lostMessages, setLostMessages] = useState<LostMessage[]>([]);
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactingProgress, setCompactingProgress] = useState<string | null>(null);
   // Which session the above tui* states belong to. Used to gate the values at
@@ -1703,6 +1705,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
     setTuiAuqData(null);
     setTuiApproveData(null);
     setTuiPlanData(null);
+    setLostMessages([]);
     setTuiHint(null);
     setIsCompacting(false);
     setCompactingProgress(null);
@@ -1750,6 +1753,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
           setTuiAuqData(st.tui_auq_data ?? null);
           setTuiApproveData(st.tui_approve_data ?? null);
           setTuiPlanData(st.tui_plan_data ?? null);
+          setLostMessages(st.lost_messages ?? []);
           setIsCompacting(!!st.is_compacting);
           setCompactingProgress(st.compacting_progress ?? null);
           setTuiOwnerSessionId(activeSessionId);
@@ -1758,6 +1762,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
           setTuiAuqData(null);
           setTuiApproveData(null);
           setTuiPlanData(null);
+          setLostMessages([]);
           setIsCompacting(false);
           setCompactingProgress(null);
           setTuiOwnerSessionId(activeSessionId);
@@ -2604,6 +2609,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
                               pendingAuqData={fresh ? tuiAuqData : null}
                               pendingApproveData={fresh ? tuiApproveData : null}
                               pendingPlanData={fresh ? tuiPlanData : null}
+                              lostMessages={fresh ? lostMessages : []}
                               refreshRef={convRefreshRef}
                             />
                           </div>

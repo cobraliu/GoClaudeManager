@@ -141,20 +141,25 @@ func (m *Manager) Compute(s *model.Session) Computed {
 			}
 		case "approve":
 			if screen := m.tmux.CaptureVisibleScreen(s.TmuxSessionName); screen != "" {
-				switch {
-				case strings.Contains(screen, "Claude has written up a plan"):
+				// Recognize a plan-approval menu structurally (ParsePlanMenu —
+				// the same robust matcher the submit path uses), NOT via a
+				// brittle header string like "Claude has written up a plan"
+				// that breaks across Claude Code versions. ParsePlanMenu needs
+				// ≥2 numbered options plus plan-specific phrasing
+				// (bypass permissions / auto-accept edits / manually approve
+				// edits) or "Would you like to proceed", none of which appear
+				// in a tool-use approval prompt — so it won't misclassify.
+				if opts, hi, ok := claudestat.ParsePlanMenu(screen); ok {
 					planViaScreen = true
 					// Surface the real menu options so the UI can render them
 					// like AUQ (instead of a fixed Approve/Reject pair).
-					if opts, hi, ok := claudestat.ParsePlanMenu(screen); ok {
-						os := make([]map[string]any, len(opts))
-						for i, o := range opts {
-							os[i] = map[string]any{"index": o.Index, "label": o.Label, "highlighted": o.Highlighted}
-						}
-						planData = map[string]any{"options": os, "highlighted": hi}
+					os := make([]map[string]any, len(opts))
+					for i, o := range opts {
+						os[i] = map[string]any{"index": o.Index, "label": o.Label, "highlighted": o.Highlighted}
 					}
-				case strings.Contains(screen, "Claude wants to use"),
-					strings.Contains(screen, "Esc to cancel") && reYesOption.MatchString(screen):
+					planData = map[string]any{"options": os, "highlighted": hi}
+				} else if strings.Contains(screen, "Claude wants to use") ||
+					(strings.Contains(screen, "Esc to cancel") && reYesOption.MatchString(screen)) {
 					approve = hookApprove
 				}
 			}

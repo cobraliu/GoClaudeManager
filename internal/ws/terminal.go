@@ -286,6 +286,11 @@ func (s *termState) handleInput(ctx context.Context, msg clientMsg) {
 			}
 			if err := s.d.Tmux.DeliverToPane(paneTarget, textPart, needsEnter); err != nil {
 				_ = wsWriteJSON(ctx, s.c, map[string]any{"type": "prompt-rejected", "reason": "send_failed", "text": textPart})
+			} else if textPart != "" {
+				// Successful (re)submit of this text clears any matching "send
+				// failed" entry on every client (rule: a successful resubmit of
+				// the same message dismisses it everywhere).
+				s.d.Store.ClearLostMessagesByText(s.sessionID, textPart)
 			}
 		}
 		return

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMe
 import { createPortal } from "react-dom";
 import hljs from "highlight.js/lib/common";
 import { marked, renderMarkdown } from "../lib/markdown";
-import { getRawMessages, getRawMessagesPage, attachSession, getSubAgents, getSubAgentLines, submitAuqAnswers, approveToolRequest, approvePlan, rewindSession, readClaudePlan, resolveCodexAuq, uploadAttachment, type RawMessage, type RawContentBlock, type RawUsage, type SubAgentMeta, type UploadedAttachment } from "../api/sessionApi";
+import { getRawMessages, getRawMessagesPage, attachSession, getSubAgents, getSubAgentLines, submitAuqAnswers, approveToolRequest, approvePlan, rewindSession, readClaudePlan, resolveCodexAuq, uploadAttachment, registerLostMessage, dismissLostMessage, type RawMessage, type RawContentBlock, type RawUsage, type SubAgentMeta, type UploadedAttachment, type LostMessage } from "../api/sessionApi";
 import { WsClient } from "../lib/wsClient";
 import { apiPath } from "../lib/baseUrl";
 import {
@@ -3762,6 +3762,9 @@ interface Props {
   pendingPlanData?: { options?: PlanMenuOption[] } | null;
   /** When true, poll JSONL aggressively until an unanswered AUQ block appears. */
   isWaitingForAuq?: boolean;
+  /** Server-synced "send failed" messages from the status poll. Rendered as
+   *  red Resend/Dismiss bubbles on EVERY client (not just the sender tab). */
+  lostMessages?: LostMessage[];
   /** Ref that receives a function to send Ctrl+C (interrupt current response). */
   stopRef?: React.MutableRefObject<(() => void) | null>;
   /** Ref that receives a function to immediately refresh the JSONL message list. */
@@ -3885,7 +3888,7 @@ function mergeRawDelta(prev: RawMessage[], delta: RawMessage[]): RawMessage[] | 
   return out;
 }
 
-export function ConversationPane({ sessionId, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, pendingPlanData, isWaitingForAuq = false, stopRef, refreshRef }: Props) {
+export function ConversationPane({ sessionId, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, pendingPlanData, isWaitingForAuq = false, lostMessages, stopRef, refreshRef }: Props) {
   // Codex app-server transport: no tmux, no terminal WS. The parent (SessionsPage)
   // owns input via CodexChatInput → POST /codex-message. We must short-circuit the
   // WS attach effect AND the internal textarea or the user sees two input bars
@@ -3913,6 +3916,13 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
   const [optimisticMsgs, setOptimisticMsgs] = useState<OptimisticMsg[]>([]);
   const [lostToast, setLostToast] = useState<string | null>(null);
+  // Server-authoritative "send failed" bubbles, keyed by id. Reconciled from the
+  // status poll (lostMessages prop) so dismiss/resend on ANY client propagates
+  // here. pendingLostRef protects a just-registered entry from being dropped by
+  // a poll that predates the server seeing it (grace window).
+  const [serverLost, setServerLost] = useState<Map<string, LostMessage>>(new Map());
+  const pendingLostRef = useRef<Map<string, { lm: LostMessage; at: number }>>(new Map());
+  const registerLostRef = useRef<(text: string, sentAt: number) => void>(() => {});
   const [newCompactUuids, setNewCompactUuids] = useState<Set<string>>(new Set());
   const [subagents, setSubagents] = useState<SubAgentMeta[]>([]);
   // Pending image uploads — attached to the next prompt and rendered as
@@ -4099,6 +4109,29 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
       setStickyAuq(null);
     }
   }, [stickyAuq, messages, pendingAuqData]);
+
+  // Cross-client auto-clear: when no source reports the AUQ anymore (it was
+  // answered on another client → backend tui_auq_data goes null AND the JSONL
+  // gains the tool_result) AND we are NOT compacting, clear the pinned widget
+  // after a short sustained-null debounce. The debounce (>1 poll past the 3s
+  // cadence) rides out brief non-compaction flickers; isCompacting suppresses
+  // the clear entirely, preserving stickyAuq's original "survive compaction
+  // flicker" purpose. Same-tab answers clear instantly via setStickyAuq(null).
+  const auqClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (currentAuq || isCompacting) {
+      if (auqClearTimerRef.current) { clearTimeout(auqClearTimerRef.current); auqClearTimerRef.current = null; }
+      return;
+    }
+    if (!stickyAuq || auqClearTimerRef.current) return;
+    auqClearTimerRef.current = setTimeout(() => {
+      auqClearTimerRef.current = null;
+      setStickyAuq(null);
+    }, 4500);
+    return () => {
+      if (auqClearTimerRef.current) { clearTimeout(auqClearTimerRef.current); auqClearTimerRef.current = null; }
+    };
+  }, [currentAuq, isCompacting, stickyAuq]);
 
   // Build map: compact_boundary uuid → compact summary text
   const compactSummaries = useMemo(() => {
@@ -4522,28 +4555,29 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
             }
           }
         }
-        // Three-state transition:
-        // - resolved (matched) → drop
-        // - still pending but compact_boundary appeared after sentAt → mark lost (the prompt was likely
-        //   consumed as the compact trigger and never reached the model)
-        // - still pending but > 30s old → mark lost (catch-all timeout for any send failure)
-        // - already lost > 5min → drop (final cleanup)
+        // Two-state transition (lost state now lives server-side):
+        // - resolved (matched) → drop the optimistic entry
+        // - still pending but compact_boundary appeared after sentAt → register
+        //   a server-side "lost" (the prompt was likely consumed as the compact
+        //   trigger and never reached the model), then drop the optimistic entry
+        // - still pending but > 30s old → register lost (catch-all send timeout)
+        const toRegister: { text: string; sentAt: number }[] = [];
         const next: OptimisticMsg[] = [];
         for (const o of prev) {
           if (resolvedOptIds.has(o.id)) continue;
-          if (o.status === "pending") {
-            const hadCompactAfter = compactBoundaryTs.some((t) => t > o.sentAt);
-            const timedOut = now - o.sentAt > 30_000;
-            if (hadCompactAfter || timedOut) {
-              next.push({ ...o, status: "lost" });
-            } else {
-              next.push(o);
-            }
+          const hadCompactAfter = compactBoundaryTs.some((t) => t > o.sentAt);
+          const timedOut = now - o.sentAt > 30_000;
+          if (hadCompactAfter || timedOut) {
+            toRegister.push({ text: o.text, sentAt: o.sentAt });
           } else {
-            // status === "lost"
-            if (now - o.sentAt > 300_000) continue;
             next.push(o);
           }
+        }
+        // Register losses outside the updater (side-effecting network call +
+        // its own setState). The optimistic entry is dropped here; the loss
+        // re-appears as a server-authoritative bubble via the reconcile effect.
+        if (toRegister.length > 0) {
+          queueMicrotask(() => toRegister.forEach((r) => registerLostRef.current(r.text, r.sentAt)));
         }
         return next;
       });
@@ -4562,6 +4596,8 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
     loadingMoreRef.current = false;
     setLoadingMore(false);
     setOptimisticMsgs([]);
+    setServerLost(new Map());
+    pendingLostRef.current.clear();
     setNewCompactUuids(new Set());
     seenCompactUuidsRef.current = new Set();
     prevMsgSigRef.current = "";
@@ -4752,19 +4788,23 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
     pendingOptimisticRef.current = optimisticMsgs.length > 0;
   }, [optimisticMsgs]);
 
-  // Fire a toast the first time an optimistic message transitions to "lost"
-  // (compact-eaten or 30s send timeout). Mark toastShown so we don't re-toast
-  // on every poll while the lost bubble sits in the list.
+  // Reconcile the server-authoritative lost set from the status poll. The poll
+  // is the source of truth (so a dismiss/resend on another client clears it
+  // here too), but a freshly-registered entry may not be reflected yet — keep
+  // those (tracked in pendingLostRef) for a short grace window so they don't
+  // flicker out between registering and the next poll confirming them.
   useEffect(() => {
-    const unshown = optimisticMsgs.find((o) => o.status === "lost" && !o.toastShown);
-    if (!unshown) return;
-    setLostToast("输入未发送成功，请到对话区点击 Resend");
-    const timer = setTimeout(() => setLostToast(null), 3000);
-    setOptimisticMsgs((prev) =>
-      prev.map((o) => (o.id === unshown.id ? { ...o, toastShown: true } : o))
-    );
-    return () => clearTimeout(timer);
-  }, [optimisticMsgs]);
+    const incoming = lostMessages ?? [];
+    const incomingIds = new Set(incoming.map((l) => l.id));
+    const now = Date.now();
+    for (const [id, v] of pendingLostRef.current) {
+      if (incomingIds.has(id) || now - v.at > 8000) pendingLostRef.current.delete(id);
+    }
+    const merged = new Map<string, LostMessage>();
+    for (const lm of incoming) merged.set(lm.id, lm);
+    for (const [id, v] of pendingLostRef.current) if (!merged.has(id)) merged.set(id, v.lm);
+    setServerLost(merged);
+  }, [lostMessages]);
 
   // ── Input / control ───────────────────────────────────────────────────────
 
@@ -4846,7 +4886,26 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
     toastTimerRef.current = setTimeout(() => { setLostToast(null); toastTimerRef.current = null; }, 3000);
   }, []);
 
-  const resendLostMsg = useCallback((id: string, text: string) => {
+  // registerLost records a detected send-failure server-side so the red bubble
+  // shows on every client. It also fires the sender-local toast and inserts the
+  // returned LostMessage optimistically (grace-protected) for instant feedback.
+  const registerLost = useCallback((text: string, sentAt: number) => {
+    showTransientToast("输入未发送成功，请到对话区点击 Resend");
+    // sent_at in epoch SECONDS to match the backend dedup window (5s).
+    registerLostMessage(sessionId, { text, sentAt: sentAt / 1000 })
+      .then((lm) => {
+        pendingLostRef.current.set(lm.id, { lm, at: Date.now() });
+        setServerLost((prev) => {
+          const n = new Map(prev);
+          n.set(lm.id, lm);
+          return n;
+        });
+      })
+      .catch(() => { /* next poll will surface it if the server recorded it */ });
+  }, [sessionId, showTransientToast]);
+  useEffect(() => { registerLostRef.current = registerLost; }, [registerLost]);
+
+  const resendLostMsg = useCallback((lostId: string, text: string) => {
     if (hasUnansweredAuq) { showTransientToast("请先回答上方的问题，再重发消息"); return; }
     // Weak-network reconnect window: the WS isn't OPEN, so sendPrompt would be
     // silently dropped. Tell the user instead of leaving the failed bubble
@@ -4855,18 +4914,26 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
       showTransientToast("连接已断开，正在重连，请稍后再试");
       return;
     }
+    // Drop the lost bubble locally + server-side now. On successful delivery the
+    // backend also clears any same-text lost on all clients; dismissing here
+    // covers the case where this id lingers if delivery fails again.
+    setServerLost((prev) => { const n = new Map(prev); n.delete(lostId); return n; });
+    pendingLostRef.current.delete(lostId);
+    dismissLostMessage(sessionId, lostId).catch(() => {});
     setOptimisticMsgs((prev) => [
-      ...prev.filter((o) => o.id !== id),
+      ...prev,
       { id: _randomId(), text, sentAt: Date.now(), status: "pending" },
     ]);
     wsRef.current.sendPrompt(text);
     stickToBottom.current = true;
     requestAnimationFrame(() => scrollToBottom(false));
-  }, [hasUnansweredAuq, scrollToBottom, showTransientToast]);
+  }, [hasUnansweredAuq, scrollToBottom, showTransientToast, sessionId]);
 
-  const dismissLostMsg = useCallback((id: string) => {
-    setOptimisticMsgs((prev) => prev.filter((o) => o.id !== id));
-  }, []);
+  const dismissLostMsg = useCallback((lostId: string) => {
+    setServerLost((prev) => { const n = new Map(prev); n.delete(lostId); return n; });
+    pendingLostRef.current.delete(lostId);
+    dismissLostMessage(sessionId, lostId).catch(() => {});
+  }, [sessionId]);
   useEffect(() => { if (stopRef) stopRef.current = stopResponse; }, [stopRef, stopResponse]);
   useEffect(() => { if (refreshRef) refreshRef.current = () => fetchMessages(LIVE_TAIL); }, [refreshRef, fetchMessages]);
 
@@ -5140,57 +5207,56 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
                 />
               );
             })}
-            {/* Optimistic messages: pending = dashed/blue while waiting JSONL confirm; lost = solid red with Resend/Dismiss when reconciliation gives up */}
-            {optimisticMsgs.map((o) => {
-              if (o.status === "lost") {
-                return (
-                  <div key={o.id} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", padding: "0 16px 2px" }}>
-                    <div style={{
-                      maxWidth: "75%", padding: "9px 14px",
-                      borderRadius: "14px 14px 3px 14px",
-                      background: "rgba(180, 60, 60, 0.18)", border: "1px solid var(--accent-red, #c0392b)",
-                      color: "var(--text-default)", fontSize: 13, lineHeight: 1.6,
-                      whiteSpace: "pre-wrap", wordBreak: "break-word",
-                    }}>
-                      <span style={{ marginRight: 6 }}>⚠️</span>{renderPromptWithImages(o.text, sessionId)}
-                    </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, paddingRight: 2 }}>
-                      <span style={{ fontSize: 10, color: "var(--accent-red, #c0392b)" }}>Send failed — likely eaten by auto-compact</span>
-                      <button
-                        onClick={() => resendLostMsg(o.id, o.text)}
-                        style={{
-                          fontSize: 11, padding: "2px 10px", borderRadius: 4,
-                          background: "var(--accent-blue, #3498db)", color: "#fff",
-                          border: "none", cursor: "pointer",
-                        }}
-                      >Resend</button>
-                      <button
-                        onClick={() => dismissLostMsg(o.id)}
-                        style={{
-                          fontSize: 11, padding: "2px 10px", borderRadius: 4,
-                          background: "transparent", color: "var(--text-faint)",
-                          border: "1px solid var(--border-default)", cursor: "pointer",
-                        }}
-                      >Dismiss</button>
-                    </div>
-                  </div>
-                );
-              }
-              return (
-                <div key={o.id} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", padding: "0 16px 2px", opacity: 0.65 }}>
-                  <div style={{
-                    maxWidth: "75%", padding: "9px 14px",
-                    borderRadius: "14px 14px 3px 14px",
-                    background: "#1c3a5e", border: "1px dashed #1d4f8a",
-                    color: "#cce5ff", fontSize: 13, lineHeight: 1.6,
-                    whiteSpace: "pre-wrap", wordBreak: "break-word",
-                  }}>
-                    {renderPromptWithImages(o.text, sessionId)}
-                  </div>
-                  <span style={{ fontSize: 10, color: "var(--text-faintest)", marginTop: 2, paddingRight: 2 }}>sending…</span>
+            {/* Server-synced "send failed" bubbles — solid red with Resend/Dismiss.
+                Driven by the status poll (serverLost), so they appear on every
+                client and clear everywhere when dismissed or successfully resent. */}
+            {[...serverLost.values()].sort((a, b) => a.created_at - b.created_at).map((lm) => (
+              <div key={lm.id} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", padding: "0 16px 2px" }}>
+                <div style={{
+                  maxWidth: "75%", padding: "9px 14px",
+                  borderRadius: "14px 14px 3px 14px",
+                  background: "rgba(180, 60, 60, 0.18)", border: "1px solid var(--accent-red, #c0392b)",
+                  color: "var(--text-default)", fontSize: 13, lineHeight: 1.6,
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                }}>
+                  <span style={{ marginRight: 6 }}>⚠️</span>{renderPromptWithImages(lm.text, sessionId)}
                 </div>
-              );
-            })}
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, paddingRight: 2 }}>
+                  <span style={{ fontSize: 10, color: "var(--accent-red, #c0392b)" }}>Send failed — likely eaten by auto-compact</span>
+                  <button
+                    onClick={() => resendLostMsg(lm.id, lm.text)}
+                    style={{
+                      fontSize: 11, padding: "2px 10px", borderRadius: 4,
+                      background: "var(--accent-blue, #3498db)", color: "#fff",
+                      border: "none", cursor: "pointer",
+                    }}
+                  >Resend</button>
+                  <button
+                    onClick={() => dismissLostMsg(lm.id)}
+                    style={{
+                      fontSize: 11, padding: "2px 10px", borderRadius: 4,
+                      background: "transparent", color: "var(--text-faint)",
+                      border: "1px solid var(--border-default)", cursor: "pointer",
+                    }}
+                  >Dismiss</button>
+                </div>
+              </div>
+            ))}
+            {/* Optimistic pending messages: dashed/blue while waiting JSONL confirm. */}
+            {optimisticMsgs.map((o) => (
+              <div key={o.id} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", padding: "0 16px 2px", opacity: 0.65 }}>
+                <div style={{
+                  maxWidth: "75%", padding: "9px 14px",
+                  borderRadius: "14px 14px 3px 14px",
+                  background: "#1c3a5e", border: "1px dashed #1d4f8a",
+                  color: "#cce5ff", fontSize: 13, lineHeight: 1.6,
+                  whiteSpace: "pre-wrap", wordBreak: "break-word",
+                }}>
+                  {renderPromptWithImages(o.text, sessionId)}
+                </div>
+                <span style={{ fontSize: 10, color: "var(--text-faintest)", marginTop: 2, paddingRight: 2 }}>sending…</span>
+              </div>
+            ))}
             {/* Pending tool approval from hooks — shown when Claude is waiting for permission */}
             {pendingApproveData && !optimisticMsgs.some((o) => o.status === "pending") && (
               <ToolApprovalBlock

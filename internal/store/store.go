@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/loki/goclaudemanager/internal/model"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
 )
 
@@ -130,6 +131,13 @@ type Store struct {
 	// wmu serializes read-modify-write sequences. Plain reads don't take it
 	// (WAL allows concurrent readers).
 	wmu sync.Mutex
+
+	// lost holds the in-memory "send failed" registry, keyed by session id.
+	// It is deliberately not persisted: lost messages are ephemeral attention
+	// items that are safe to drop on restart. See lost_messages.go.
+	lostMu sync.Mutex
+	lost   map[string][]model.LostMessage
+	lostN  uint64
 }
 
 // Open resolves the data.db path (mirroring config._db_file), opens it with WAL

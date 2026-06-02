@@ -44,6 +44,7 @@ func sessionsRouter(d Deps) http.Handler {
 	registerSessionWriteRoutes(r, d)
 	// Conversation shares + bash terminals.
 	registerShareRoutes(r, d)
+	registerLostMessageRoutes(r, d)
 	registerTerminalRoutes(r, d, d.Term)
 	// Interactive TUI actions, per-project memory, extra read endpoints, and
 	// external session browsing (ported in parallel).
@@ -143,6 +144,7 @@ func listSessionsStatus(d Deps, w http.ResponseWriter, r *http.Request) {
 			TuiApproveData:     comp.TuiApproveData,
 			TuiPlanPending:     comp.TuiPlanPending,
 			TuiPlanData:        comp.TuiPlanData,
+			LostMessages:       d.Store.ListLostMessages(s.ID),
 		})
 	}
 	writeJSON(w, http.StatusOK, model.SessionStatusListResponse{Items: views, Total: len(views)})

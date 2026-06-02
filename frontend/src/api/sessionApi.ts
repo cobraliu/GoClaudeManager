@@ -434,6 +434,38 @@ export interface SessionStatusItem {
   tui_approve_data?: TuiApproveData | null;
   tui_plan_pending?: boolean;
   tui_plan_data?: TuiPlanData | null;
+  lost_messages?: LostMessage[];
+}
+
+// LostMessage is a "send failed" indicator synced server-side so it shows on,
+// and can be dismissed from, every connected client (not just the sender tab).
+// Mirrors model.LostMessage. Ephemeral: the server keeps these in memory only.
+export interface LostMessage {
+  id: string;
+  text: string;
+  sent_at: number;
+  created_at: number;
+}
+
+// registerLostMessage records a detected send failure server-side so the bubble
+// appears on all clients via the next status poll. Returns the (possibly
+// deduped) LostMessage.
+export function registerLostMessage(
+  sessionId: string,
+  body: { text: string; sentAt: number },
+): Promise<LostMessage> {
+  return request(`/api/sessions/${sessionId}/lost-messages`, {
+    method: "POST",
+    body: JSON.stringify({ text: body.text, sent_at: body.sentAt }),
+  });
+}
+
+// dismissLostMessage removes a single lost message by id (manual dismiss);
+// clears on all clients next poll.
+export function dismissLostMessage(sessionId: string, lostId: string): Promise<void> {
+  return request(`/api/sessions/${sessionId}/lost-messages/${encodeURIComponent(lostId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function approveToolRequest(sessionId: string, decision: "allow" | "deny"): Promise<{ ok: boolean }> {
