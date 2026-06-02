@@ -659,12 +659,16 @@ func PendingAUQFromHooks(claudeSessionID, cwd string) (map[string]any, bool) {
 	}
 
 	// Check whether this AUQ was already answered (tool_result in JSONL).
+	// A `decided` verdict means the AUQ's fate is known and it is NOT pending:
+	// either a tool_result was found (answered), or the id is buried before the
+	// scan window in a file larger than the window — asked long ago, so Claude
+	// has produced megabytes of transcript since and it is necessarily resolved.
+	// Only (decided == false) — a recent id with no result yet, or a small file
+	// with no id at all — leaves the AUQ genuinely pending.
 	jsonlPath := FindSessionJSONL(claudeSessionID, cwd)
 	if jsonlPath != "" {
-		if answered, decided := auqAnsweredInJSONL(jsonlPath, latestAUQID); decided {
-			if answered {
-				return nil, false
-			}
+		if _, decided := auqAnsweredInJSONL(jsonlPath, latestAUQID); decided {
+			return nil, false
 		}
 	}
 
@@ -679,6 +683,13 @@ func PendingAUQFromHooks(claudeSessionID, cwd string) (map[string]any, bool) {
 //	(false, false) — id seen without a tool_result, OR window covers whole file
 //	                 and id absent → genuinely pending (caller keeps the AUQ)
 func auqAnsweredInJSONL(jsonlPath, auqID string) (answered, decided bool) {
+	return auqAnsweredInJSONLWindow(jsonlPath, auqID, auqJSONLWindow)
+}
+
+// auqAnsweredInJSONLWindow is auqAnsweredInJSONL with an injectable tail-scan
+// window (the production caller passes auqJSONLWindow; tests pass a small value
+// to exercise the buried-before-window branch without a multi-MB fixture).
+func auqAnsweredInJSONLWindow(jsonlPath, auqID string, window int64) (answered, decided bool) {
 	f, err := os.Open(jsonlPath)
 	if err != nil {
 		return false, false
@@ -690,8 +701,8 @@ func auqAnsweredInJSONL(jsonlPath, auqID string) (answered, decided bool) {
 	}
 	size := fi.Size()
 	off := int64(0)
-	if size > auqJSONLWindow {
-		off = size - auqJSONLWindow
+	if size > window {
+		off = size - window
 	}
 	if _, err := f.Seek(off, 0); err != nil {
 		return false, false
@@ -711,7 +722,7 @@ func auqAnsweredInJSONL(jsonlPath, auqID string) (answered, decided bool) {
 			}
 		}
 	}
-	if !idSeen && size > auqJSONLWindow {
+	if !idSeen && size > window {
 		return false, true // buried older than window → answered
 	}
 	// id seen without tool_result, or whole file scanned and id absent → pending.

@@ -99,7 +99,7 @@ func createShare(d Deps, w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusUnprocessableEntity, "cutoff_after_uuid required for limited share")
 			return
 		}
-		jsonlPath := resolveSessionJSONL(s)
+		jsonlPath := resolveSessionJSONL(d, s)
 		if jsonlPath == "" {
 			writeErr(w, http.StatusNotFound, "conversation not found")
 			return
@@ -190,18 +190,17 @@ func md5Hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// resolveSessionJSONL locates the session's transcript JSONL strictly from its
-// own captured agent_session_id (via resolveChatSIDCore) — never the newest
-// session under cwd, which could be a sibling's. Returns "" for cursor/codex
-// tools whose transcripts are not line-based Claude JSONL, or when the session's
-// own transcript does not resolve.
-func resolveSessionJSONL(s *model.Session) string {
+// resolveSessionJSONL locates the session's transcript JSONL via the same
+// resolution as the Chat view (resolveChatSIDCore): the session's own captured
+// id, or — if that rotated away — the newest transcript in the cwd that no other
+// session claims, never a sibling's. Returns "" for cursor/codex tools whose
+// transcripts are not line-based Claude JSONL, or when nothing resolves.
+func resolveSessionJSONL(d Deps, s *model.Session) string {
 	if s.Tool != "claude" && s.Tool != "" {
 		return ""
 	}
-	// Authoritative link only: the session's own captured id, never a sibling's
-	// newest transcript in the cwd (see resolveChatSIDCore).
-	chatSID := resolveChatSIDCore(s)
+	exclude, _ := d.Store.GetAllAgentSessionIDs(s.ID)
+	chatSID := resolveChatSIDCore(s, exclude)
 	if chatSID == "" {
 		return ""
 	}

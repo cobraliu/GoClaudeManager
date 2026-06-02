@@ -1,6 +1,7 @@
 package claudestat
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -199,5 +200,45 @@ func TestContainsBytes(t *testing.T) {
 	}
 	if containsBytes([]byte("short"), []byte("longerneedle")) {
 		t.Errorf("needle longer than haystack should not match")
+	}
+}
+
+// TestAuqAnsweredInJSONLWindow exercises the three verdicts of the tail-scan,
+// using a small injected window so the buried-before-window branch (the Claw
+// phantom-AUQ bug) is reachable without a multi-MB fixture.
+func TestAuqAnsweredInJSONLWindow(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := dir + "/" + name
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	const auqID = "toolu_TARGET"
+
+	// 1. id present WITH a tool_result on the same line → answered, decided.
+	answered := write("answered.jsonl",
+		`{"tool_use_id":"`+auqID+`","type":"tool_result"}`+"\n")
+	if a, d := auqAnsweredInJSONLWindow(answered, auqID, 1<<20); !a || !d {
+		t.Errorf("answered: got (%v,%v), want (true,true)", a, d)
+	}
+
+	// 2. id present WITHOUT a tool_result, whole file within window → pending.
+	pending := write("pending.jsonl",
+		`{"tool_use_id":"`+auqID+`","name":"AskUserQuestion"}`+"\n")
+	if a, d := auqAnsweredInJSONLWindow(pending, auqID, 1<<20); a || d {
+		t.Errorf("pending: got (%v,%v), want (false,false)", a, d)
+	}
+
+	// 3. id buried BEFORE a tiny window in a file larger than the window →
+	//    treated as answered (the Claw repro). The id sits at the head; with a
+	//    16-byte window only the tail is scanned, so it is absent from the scan
+	//    yet size > window → (false, true).
+	buried := write("buried.jsonl",
+		`{"tool_use_id":"`+auqID+`"}`+"\n"+strings.Repeat("x", 4096)+"\n")
+	if a, d := auqAnsweredInJSONLWindow(buried, auqID, 16); a || !d {
+		t.Errorf("buried: got (%v,%v), want (false,true)", a, d)
 	}
 }

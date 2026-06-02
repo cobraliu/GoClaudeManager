@@ -49,7 +49,8 @@ func TestResolveChatSID_NeverTalkedDoesNotBorrowSibling(t *testing.T) {
 		AgentSessionID: ptr("B-sid"), // captured from pid, but no file written yet
 		// LastTurnAt nil → never talked
 	}
-	if got := resolveChatSIDCore(b); got != "" {
+	// exclude = sibling A's claimed id.
+	if got := resolveChatSIDCore(b, map[string]bool{"A-sid": true}); got != "" {
 		t.Fatalf("never-talked session must show empty, got %q", got)
 	}
 }
@@ -71,25 +72,26 @@ func TestResolveChatSID_OwnFileWins(t *testing.T) {
 		AgentSessionID: ptr("own-sid"),
 		LastTurnAt:     isoPtr(now),
 	}
-	if got := resolveChatSIDCore(s); got != "own-sid" {
+	if got := resolveChatSIDCore(s, map[string]bool{"sibling-sid": true}); got != "own-sid" {
 		t.Fatalf("own existing transcript should win, got %q", got)
 	}
 }
 
-// TestResolveChatSID_StoredFileGoneNeverBorrows: a session that conversed but
-// whose stored id no longer resolves (rotated away / deleted) must NOT borrow
-// any other transcript in the cwd — not a sibling's, and not even a plausibly
-// "own" rotated file we cannot prove ownership of. The link is authoritative;
-// when it does not resolve, Chat shows empty.
-func TestResolveChatSID_StoredFileGoneNeverBorrows(t *testing.T) {
+// TestResolveChatSID_RotatedIDRecoversOwnNotSibling: a session that conversed
+// but whose stored id rotated away (file gone) recovers the newest UNCLAIMED
+// transcript in the cwd (its own rotated file), never a sibling's claimed one.
+// This is the GoClaudeManager case: a single-session cwd whose id rotated on
+// compaction must still show its own conversation in Chat.
+func TestResolveChatSID_RotatedIDRecoversOwnNotSibling(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	cwd := "/tmp/cm-test-proj3"
 
 	base := time.Now()
-	// Other transcripts exist in the cwd, but none is this session's stored id.
+	// Sibling's transcript is the newest overall, but it is claimed.
 	writeJSONL(t, home, cwd, "sibling-sid", base.Add(2*time.Hour))
-	writeJSONL(t, home, cwd, "another-sid", base.Add(1*time.Hour))
+	// This session's rotated transcript (unclaimed), older than the sibling's.
+	writeJSONL(t, home, cwd, "rotated-own", base.Add(1*time.Hour))
 
 	s := &model.Session{
 		Tool:           "claude",
@@ -97,8 +99,28 @@ func TestResolveChatSID_StoredFileGoneNeverBorrows(t *testing.T) {
 		AgentSessionID: ptr("ghost-stale-id"), // no file on disk
 		LastTurnAt:     isoPtr(base),
 	}
-	if got := resolveChatSIDCore(s); got != "" {
-		t.Fatalf("stored id with no file must not borrow another transcript, got %q", got)
+	if got := resolveChatSIDCore(s, map[string]bool{"sibling-sid": true}); got != "rotated-own" {
+		t.Fatalf("should recover own rotated transcript, not the claimed sibling, got %q", got)
+	}
+}
+
+// TestResolveChatSID_SingleSessionRecoversRotated: the minimal GoClaudeManager
+// repro — only one session in the cwd, stored id gone, one newer transcript on
+// disk → recover it (no sibling to exclude).
+func TestResolveChatSID_SingleSessionRecoversRotated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/tmp/cm-test-proj5"
+
+	writeJSONL(t, home, cwd, "rotated-real", time.Now())
+	s := &model.Session{
+		Tool:           "claude",
+		Cwd:            cwd,
+		AgentSessionID: ptr("dead-stored-id"), // no file on disk
+		LastTurnAt:     isoPtr(time.Now()),
+	}
+	if got := resolveChatSIDCore(s, nil); got != "rotated-real" {
+		t.Fatalf("single-session cwd must recover its rotated transcript, got %q", got)
 	}
 }
 
@@ -109,7 +131,7 @@ func TestResolveChatSID_NoTranscriptAtAll(t *testing.T) {
 	cwd := "/tmp/cm-test-proj4"
 
 	s := &model.Session{Tool: "claude", Cwd: cwd, AgentSessionID: ptr("B-sid")}
-	if got := resolveChatSIDCore(s); got != "" {
+	if got := resolveChatSIDCore(s, nil); got != "" {
 		t.Fatalf("no transcript + never talked → empty, got %q", got)
 	}
 }
