@@ -190,21 +190,18 @@ func md5Hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// resolveSessionJSONL locates the session's transcript JSONL, preferring the
-// recorded agent_session_id and falling back to the newest session under cwd
-// (mirrors the adapter resolution in the Python share routes). Returns "" for
-// cursor/codex tools whose transcripts are not line-based Claude JSONL.
+// resolveSessionJSONL locates the session's transcript JSONL strictly from its
+// own captured agent_session_id (via resolveChatSIDCore) — never the newest
+// session under cwd, which could be a sibling's. Returns "" for cursor/codex
+// tools whose transcripts are not line-based Claude JSONL, or when the session's
+// own transcript does not resolve.
 func resolveSessionJSONL(s *model.Session) string {
 	if s.Tool != "claude" && s.Tool != "" {
 		return ""
 	}
-	chatSID := ""
-	if s.AgentSessionID != nil {
-		chatSID = *s.AgentSessionID
-	}
-	if chatSID == "" {
-		chatSID = jsonl.FindNewestClaudeSessionID(s.Cwd)
-	}
+	// Authoritative link only: the session's own captured id, never a sibling's
+	// newest transcript in the cwd (see resolveChatSIDCore).
+	chatSID := resolveChatSIDCore(s)
 	if chatSID == "" {
 		return ""
 	}

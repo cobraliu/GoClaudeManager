@@ -250,18 +250,12 @@ func resumeSession(d Deps, w http.ResponseWriter, r *http.Request) {
 	_ = os.MkdirAll(s.Cwd, 0o755)
 	ts := time.Now().Unix()
 	tmuxName := "claude-" + s.OwnerID + "-" + s.Project + "-" + itoa(ts)
-	// Resolve the resume id defensively: the stored agent_session_id can be stale
-	// (Claude rotates its session id on compaction/restart, and old capture bugs
-	// recorded ids whose transcript is gone). resolveChatSID returns the stored id
-	// only if its JSONL still exists on disk, otherwise the newest transcript in
-	// the cwd — so `claude --resume` targets a real conversation instead of
-	// exiting immediately (which would let the monitor flip us back to terminated).
-	resume := ""
-	if s.Tool == "claude" || s.Tool == "cursor" {
-		resume = resolveResumeSID(s.Tool, s.Cwd, s)
-	} else if s.AgentSessionID != nil {
-		resume = *s.AgentSessionID
-	}
+	// Resume targets the session's OWN captured agent_session_id and never
+	// reassigns it: the link established at create time is authoritative and must
+	// stay pinned across resume. We pass the stored id as-is — we do NOT borrow
+	// the newest transcript in the cwd, which in a shared directory would belong
+	// to a sibling session and corrupt this session's linkage.
+	resume := agentSessionID(s)
 	model_ := ""
 	if s.Model != nil {
 		model_ = *s.Model
@@ -275,15 +269,13 @@ func resumeSession(d Deps, w http.ResponseWriter, r *http.Request) {
 	_ = d.Store.ResetAttachedClients(s.ID)
 	if s.Tool != "cursor" {
 		_ = d.Store.UpdateClaudeProcPID(s.ID, nil)
+		// Re-resolve only the live PID for process monitoring. The
+		// agent_session_id is intentionally NOT updated on resume — the
+		// create-time link is authoritative and stays pinned.
 		go func(sid, name, scwd string) {
-			if asid, pid, ok := d.Tmux.ResolveAgentSessionID(name, scwd, 15*time.Second); ok {
-				if pid > 0 {
-					p := pid
-					_ = d.Store.UpdateClaudeProcPID(sid, &p)
-				}
-				if asid != "" {
-					_ = d.Store.UpdateAgentSessionID(sid, asid)
-				}
+			if _, pid, ok := d.Tmux.ResolveAgentSessionID(name, scwd, 15*time.Second); ok && pid > 0 {
+				p := pid
+				_ = d.Store.UpdateClaudeProcPID(sid, &p)
 			}
 		}(s.ID, tmuxName, s.Cwd)
 	}
