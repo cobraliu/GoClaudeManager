@@ -3608,11 +3608,21 @@ const MessageEntry = React.memo(function MessageEntry({
         } else if (b.name === "ExitPlanMode") {
           const result = toolResults.get(b.id);
           if (result) {
-            const approved = !result.content.toLowerCase().includes("reject");
+            // The approval tool_result begins with a status line ("User has
+            // approved your plan…") and then embeds the FULL plan body after a
+            // "## Approved Plan:" / "Here is Claude's plan" marker. That body
+            // can itself contain the word "reject" (e.g. a plan describing
+            // reject→deny handling), which previously flipped an approved plan
+            // to "rejected". Classify from the status portion only, excluding
+            // the embedded plan body. A rejection result has no such marker, so
+            // its whole text is scanned and "rejected" is still detected.
+            const planMarker = result.content.search(/##\s*Approved Plan:|Here is Claude's plan/i);
+            const statusPart = planMarker >= 0 ? result.content.slice(0, planMarker) : result.content;
+            const approved = !statusPart.toLowerCase().includes("reject");
             const planInput = (b.input as Record<string, unknown>) || {};
             const planText = planInput.plan ? String(planInput.plan) : undefined;
             const planPath = b.id ? planPathByExitBlockId?.get(b.id) : undefined;
-            const feedback = !approved ? result.content.trim() : undefined;
+            const feedback = !approved ? statusPart.trim() : undefined;
             segments.push(<PlanHistoryBlock key={i} planText={planText} planPath={planPath} approved={approved} feedback={feedback} />);
           } else if (!hideExitPlanBlock) {
             // Pending and we're NOT already showing PlanApprovalBlock below — show a neutral indicator
