@@ -634,7 +634,7 @@ function _writeListCache(items: SessionMeta[], total: number) {
   } catch { /* quota — ignore */ }
 }
 
-function ListView({ username, onLogout, onOpen, onSwitchToAdmin, theme, onToggleTheme, terminalFont, onTerminalFontChange }: { username: string; onLogout: () => void; onOpen: (s: SessionMeta) => void; onSwitchToAdmin?: () => void; theme?: "dark" | "light"; onToggleTheme?: () => void; terminalFont?: string; onTerminalFontChange?: (font: string) => void }) {
+function ListView({ username, onLogout, onOpen, onSwitchToAdmin, onOpenTool, theme, onToggleTheme, terminalFont, onTerminalFontChange }: { username: string; onLogout: () => void; onOpen: (s: SessionMeta) => void; onSwitchToAdmin?: () => void; onOpenTool?: () => void; theme?: "dark" | "light"; onToggleTheme?: () => void; terminalFont?: string; onTerminalFontChange?: (font: string) => void }) {
   const isAdmin = localStorage.getItem("role") === "admin";
   const cached = _readListCache();
   const [sessions, setSessions] = useState<SessionMeta[]>(cached?.items ?? []);
@@ -752,6 +752,12 @@ function ListView({ username, onLogout, onOpen, onSwitchToAdmin, theme, onToggle
             style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-muted)", fontSize: 14, padding: "4px 7px", cursor: "pointer" }}>
             ⚙
           </button>
+          {onOpenTool && (
+            <button onClick={onOpenTool} title="渲染本地 JSONL 文件为 Chat 视图"
+              style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-muted)", fontSize: 14, padding: "4px 7px", cursor: "pointer" }}>
+              🧩
+            </button>
+          )}
           {onSwitchToAdmin && (
             <button onClick={onSwitchToAdmin}
               style={{ fontSize: 12, padding: "5px 10px", background: "rgba(88,166,255,0.12)", color: "var(--accent-blue)", border: "1px solid rgba(88,166,255,0.3)", borderRadius: 6 }}>
@@ -5947,7 +5953,7 @@ function MobileAttentionBanner({ items, onJump }: { items: MobileAttentionItem[]
   );
 }
 
-export function MobilePage({ username, onLogout, onSwitchToAdmin, theme, onToggleTheme }: { username: string; onLogout: () => void; onSwitchToAdmin?: () => void; theme?: "dark" | "light"; onToggleTheme?: () => void }) {
+export function MobilePage({ username, onLogout, onSwitchToAdmin, onOpenTool, theme, onToggleTheme }: { username: string; onLogout: () => void; onSwitchToAdmin?: () => void; onOpenTool?: () => void; theme?: "dark" | "light"; onToggleTheme?: () => void }) {
   const [openSession, setOpenSession] = useState<SessionMeta | null>(null);
   const [terminalFont, setTerminalFontState] = useState<string | undefined>(undefined);
 
@@ -6048,7 +6054,7 @@ export function MobilePage({ username, onLogout, onSwitchToAdmin, theme, onToggl
     <>
       {openSession
         ? <DetailView session={openSession} onBack={closeDetail} username={username} onLogout={onLogout} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />
-        : <ListView username={username} onLogout={onLogout} onOpen={openDetail} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />}
+        : <ListView username={username} onLogout={onLogout} onOpen={openDetail} onSwitchToAdmin={onSwitchToAdmin} onOpenTool={onOpenTool} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />}
       <MobileAttentionBanner items={bannerItems} onJump={jumpToSession} />
     </>
   );

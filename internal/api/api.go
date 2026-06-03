@@ -66,6 +66,9 @@ func Router(d Deps) http.Handler {
 	// Top-level config / models / usage / fs endpoints (config_routes.go).
 	registerTopLevelRoutes(r, d)
 
+	// Standalone utility endpoints (non-session, RequireUser) — tools.go.
+	registerToolsRoutes(r, d)
+
 	r.Mount("/auth", authRouter(d))
 	r.Mount("/sessions", sessionsRouter(d))
 	r.Mount("/public/share", PublicShareRouter(d))

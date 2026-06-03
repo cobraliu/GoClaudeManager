@@ -800,6 +800,29 @@ export async function uploadAttachment(
   return (await resp.json()) as UploadedAttachment;
 }
 
+// parseJsonlFile uploads an arbitrary JSONL transcript and returns it parsed
+// into the same {messages, total} shape the session /raw-messages endpoint
+// produces — for the standalone "JSONL → Chat" viewer tool. Not tied to any
+// session; the backend parses a throwaway temp copy and discards it.
+export async function parseJsonlFile(
+  file: File,
+): Promise<{ messages: RawMessage[]; total: number }> {
+  const token = localStorage.getItem("token") || "";
+  const form = new FormData();
+  form.append("file", file);
+  const resp = await fetch(apiPath(`/api/tools/jsonl-parse`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (resp.status === 401) { localStorage.removeItem("token"); window.location.reload(); throw new Error("unauthorized"); }
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as { messages: RawMessage[]; total: number };
+}
+
 export interface DirInfoItem {
   name: string;
   path: string;

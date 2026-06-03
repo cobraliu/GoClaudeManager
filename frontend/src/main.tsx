@@ -4,6 +4,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { AdminPage } from "./pages/AdminPage";
 import { MobilePage } from "./pages/MobilePage";
+import { JsonlChatToolPage } from "./pages/JsonlChatToolPage";
 import { ShareViewer } from "./components/ShareViewer";
 import type { ShareType } from "./api/sessionApi";
 import { startMermaidObserver } from "./lib/mermaid";
@@ -54,6 +55,7 @@ function App() {
   );
   const [isAdminUser, setIsAdminUser] = useState(() => getIsAdminFromToken());
   const [viewAsAdmin, setViewAsAdmin] = useState(false);
+  const [viewTool, setViewTool] = useState(false);
   const [theme, setTheme] = useState<Theme>(
     () => (localStorage.getItem("theme") as Theme) || "dark"
   );
@@ -112,6 +114,16 @@ function App() {
     return <LoginPage onLogin={handleLogin} theme={theme} onToggleTheme={toggleTheme} />;
   }
 
+  if (viewTool) {
+    return (
+      <JsonlChatToolPage
+        onBack={() => setViewTool(false)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+    );
+  }
+
   if (viewAsAdmin) {
     return (
       <AdminPage
@@ -129,6 +141,7 @@ function App() {
         username={username}
         onLogout={handleLogout}
         onSwitchToAdmin={isAdminUser ? () => setViewAsAdmin(true) : undefined}
+        onOpenTool={() => setViewTool(true)}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
@@ -140,6 +153,7 @@ function App() {
       username={username}
       onLogout={handleLogout}
       onSwitchToAdmin={isAdminUser ? () => setViewAsAdmin(true) : undefined}
+      onOpenTool={() => setViewTool(true)}
       theme={theme}
       onToggleTheme={toggleTheme}
     />

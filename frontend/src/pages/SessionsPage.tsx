@@ -690,6 +690,7 @@ interface Props {
   username: string;
   onLogout: () => void;
   onSwitchToAdmin?: () => void;
+  onOpenTool?: () => void;
   theme: "dark" | "light";
   onToggleTheme: () => void;
 }
@@ -1401,7 +1402,7 @@ function BrowseExternalPanel({
 }
 
 /* ───── Main Page ───── */
-export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onToggleTheme }: Props) {
+export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, theme, onToggleTheme }: Props) {
   const isAdmin = localStorage.getItem("role") === "admin";
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [active, setActive] = useState<AttachResponse | null>(null);
@@ -2233,6 +2234,15 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, theme, onTog
               >
                 {compact ? "▦" : "▦ ASCII"}
               </button>
+              {onOpenTool && (
+                <button
+                  onClick={onOpenTool}
+                  title="渲染本地 JSONL 文件为 Chat 视图"
+                  style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", fontSize: compact ? 14 : 11, padding: compact ? "3px 7px" : "4px 8px", border: "1px solid var(--border)", borderRadius: 4, lineHeight: 1 }}
+                >
+                  {compact ? "🧩" : "🧩 JSONL"}
+                </button>
+              )}
             </div>
           );
         })()}
