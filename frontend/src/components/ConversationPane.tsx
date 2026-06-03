@@ -3673,9 +3673,7 @@ const MessageEntry = React.memo(function MessageEntry({
     // (avoids double-indenting); the accent bar sits flush at the edge.
     return (
       <div style={{ borderLeft: "3px solid #6d28d9", background: "var(--bg-surface)", opacity: 0.8, fontStyle: "italic", fontSize: "0.9em" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 16px 0", fontSize: 10, color: "#a78bfa", fontStyle: "normal", letterSpacing: 0.3 }}>
-          <span>⟳</span><span>流式预览 · 尚未写入记录</span>
-        </div>
+        <div style={{ padding: "3px 16px 0", fontSize: 10, color: "#a78bfa", fontStyle: "normal" }}>⟳</div>
         {body}
       </div>
     );
