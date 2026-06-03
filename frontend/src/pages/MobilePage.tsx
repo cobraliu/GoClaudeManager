@@ -2609,7 +2609,10 @@ function MobileTasksPanel({
   }, [sessionId]);
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 5000);
+    // Full-screen panel, actively watched — poll at second-level (1.5s, matching
+    // the Chat pane) so status transitions stay near-real-time instead of
+    // lagging up to 5s.
+    const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
   }, [refresh]);
 
@@ -2741,7 +2744,10 @@ function MobileGoalsPanel({
   }, [sessionId]);
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 5000);
+    // Full-screen panel, actively watched — poll at second-level (1.5s, matching
+    // the Chat pane) so status transitions stay near-real-time instead of
+    // lagging up to 5s.
+    const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
   }, [refresh]);
 
@@ -2831,7 +2837,10 @@ function MobileAuqsPanel({
   }, [sessionId]);
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 5000);
+    // Full-screen panel, actively watched — poll at second-level (1.5s, matching
+    // the Chat pane) so status transitions stay near-real-time instead of
+    // lagging up to 5s.
+    const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
   }, [refresh]);
 

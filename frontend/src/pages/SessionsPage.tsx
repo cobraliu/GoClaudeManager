@@ -1573,7 +1573,8 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
       return;
     }
     refreshStatusBar();
-    const id = setInterval(refreshStatusBar, 5000);
+    // 2s always-on poll for the toolbar task/goal counts (active-only, light).
+    const id = setInterval(refreshStatusBar, 2000);
     return () => clearInterval(id);
   }, [activeSessionId, isClaudeSession, refreshStatusBar]);
   // History is only rendered inside the dock, so fetch + refresh it only while
@@ -1586,7 +1587,10 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
       if (dockOpen.goals) refreshDockGoals();
     };
     tick();
-    const id = setInterval(tick, 5000);
+    // While the dock is open the user is actively watching — poll at the same
+    // ~second-level cadence as the Chat pane (1.5s) so task status transitions
+    // appear near-real-time instead of lagging up to 5s.
+    const id = setInterval(tick, 1500);
     return () => clearInterval(id);
   }, [activeSessionId, isClaudeSession, dockOpen.tasks, dockOpen.goals, refreshDockTodos, refreshDockGoals]);
 
