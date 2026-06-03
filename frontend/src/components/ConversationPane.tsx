@@ -3420,6 +3420,15 @@ const MessageEntry = React.memo(function MessageEntry({
   planPathByExitBlockId?: Map<string, string>;
   onRewindMessage?: (uuid: string) => void;
 }) {
+  // In-flight streaming-preview snapshot (anthropic-proxy `kind: "snapshot"`,
+  // merged in by mergeProxySnapshots as a synthetic `tap-…` assistant entry).
+  // It is partial, not yet written to the JSONL, and churns/disappears as the
+  // CLI flushes the real line — so it gets a muted, italic, boxed "preview"
+  // treatment instead of looking like a committed message. ("final" snapshots
+  // mirror a completed turn and render normally.)
+  const _snapKind = (entry as unknown as Record<string, unknown>)._snapshot_kind;
+  const isSnapshotPreview = _snapKind === "snapshot";
+
   // compact_boundary system entry
   if (entry.type === "system" && (entry as unknown as Record<string, unknown>).subtype === "compact_boundary") {
     const summary = compactSummaries.get(entry.uuid || "");
@@ -3645,7 +3654,7 @@ const MessageEntry = React.memo(function MessageEntry({
       }
     }
     if (segments.length === 0) return null;
-    return (
+    const body = (
       <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
         {segments}
         {(msg.usage || ts) && (
@@ -3656,6 +3665,18 @@ const MessageEntry = React.memo(function MessageEntry({
             {ts && <span style={{ fontSize: 10, color: "var(--text-faintest)", flexShrink: 0 }}>{ts}</span>}
           </div>
         )}
+      </div>
+    );
+    if (!isSnapshotPreview) return body;
+    // Streaming-preview wrapper: left accent bar + label + dimmed italic body.
+    // No horizontal margin so the inner segments keep their own 16px padding
+    // (avoids double-indenting); the accent bar sits flush at the edge.
+    return (
+      <div style={{ borderLeft: "3px solid #6d28d9", background: "var(--bg-surface)", opacity: 0.8, fontStyle: "italic", fontSize: "0.9em" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 16px 0", fontSize: 10, color: "#a78bfa", fontStyle: "normal", letterSpacing: 0.3 }}>
+          <span>⟳</span><span>流式预览 · 尚未写入记录</span>
+        </div>
+        {body}
       </div>
     );
   }
