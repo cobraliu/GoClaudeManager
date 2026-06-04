@@ -247,8 +247,38 @@ type PlanMenuOption struct {
 // options, the highlighted row index (0 if none marked), and whether the screen
 // looks like a plan menu.
 func ParsePlanMenu(screen string) (opts []PlanMenuOption, highlightedIdx int, ok bool) {
-	matches := planMenuOptRE.FindAllStringSubmatch(screen, -1)
+	// The plan body renders directly ABOVE the menu and routinely contains
+	// numbered lists of its own, so a whole-screen sweep would absorb plan
+	// content as extra "options" — corrupting both the rendered card and the
+	// index-delta arrow-key navigation built on these options. Anchor to the
+	// stable prompt line when present…
+	region := screen
+	if i := strings.LastIndex(screen, "Would you like to proceed"); i >= 0 {
+		region = screen[i:]
+	}
+	matches := planMenuOptRE.FindAllStringSubmatch(region, -1)
+	// …then keep only the LAST run of consecutively-numbered rows starting at
+	// "1." — the real menu always renders as 1..N at the bottom; any earlier
+	// numbered rows are plan content.
+	start := -1
 	for i, m := range matches {
+		if m[2] == "1" {
+			start = i
+		}
+	}
+	if start < 0 {
+		return nil, 0, false
+	}
+	run := matches[start : start+1]
+	for i := start + 1; i < len(matches); i++ {
+		n, _ := strconv.Atoi(matches[i][2])
+		prev, _ := strconv.Atoi(matches[i-1][2])
+		if n != prev+1 {
+			break
+		}
+		run = append(run, matches[i])
+	}
+	for i, m := range run {
 		o := PlanMenuOption{Index: i, Label: strings.TrimSpace(m[3]), Highlighted: m[1] == "❯"}
 		if o.Highlighted {
 			highlightedIdx = i

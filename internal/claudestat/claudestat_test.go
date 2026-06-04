@@ -280,3 +280,50 @@ func TestParsePlanMenu_RecognizesPlanNotToolApprove(t *testing.T) {
 		t.Fatalf("tool-approval prompt was misclassified as a plan menu")
 	}
 }
+
+// TestParsePlanMenu_IgnoresPlanBodyNumberedLists guards against absorbing the
+// plan CONTENT into the option list: the plan body renders directly above the
+// menu and routinely contains numbered lists of its own. Only the last run of
+// consecutively-numbered rows (the real 1..N menu at the bottom) may be
+// returned — extra "options" would corrupt both the rendered card and the
+// index-delta arrow-key navigation.
+func TestParsePlanMenu_IgnoresPlanBodyNumberedLists(t *testing.T) {
+	screen := strings.Join([]string{
+		"  Plan: refactor the loader",
+		"  Steps:",
+		"  1. Extract the parser into its own package",
+		"  2. Add unit tests for edge cases",
+		"  3. Wire the new package into main",
+		"",
+		"  Would you like to proceed?",
+		"",
+		"  ❯ 1. Yes, and bypass permissions",
+		"    2. Yes, and auto-accept edits",
+		"    3. Yes, and manually approve edits",
+		"    4. No, keep planning",
+	}, "\n")
+	opts, hi, ok := ParsePlanMenu(screen)
+	if !ok {
+		t.Fatalf("expected plan menu to be recognized, got ok=false")
+	}
+	if len(opts) != 4 {
+		t.Fatalf("expected exactly the 4 menu options, got %d: %+v", len(opts), opts)
+	}
+	if opts[0].Label != "Yes, and bypass permissions" || opts[3].Label != "No, keep planning" {
+		t.Fatalf("wrong options captured: %+v", opts)
+	}
+	if hi != 0 || !opts[0].Highlighted {
+		t.Fatalf("expected highlight on index 0, got hi=%d opts=%+v", hi, opts)
+	}
+
+	// Same screen but WITHOUT the proceed prompt (older/newer wording): the
+	// last-1..N-run anchor alone must still exclude the plan body.
+	noPrompt := strings.ReplaceAll(screen, "  Would you like to proceed?", "  Ready to code?")
+	opts, _, ok = ParsePlanMenu(noPrompt)
+	if !ok {
+		t.Fatalf("expected plan menu to be recognized without proceed prompt")
+	}
+	if len(opts) != 4 {
+		t.Fatalf("no-prompt: expected 4 options, got %d: %+v", len(opts), opts)
+	}
+}
