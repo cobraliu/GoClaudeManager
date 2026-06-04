@@ -2029,6 +2029,12 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers }
       borderRadius: 8,
       background: "var(--bg-surface)",
       overflow: "hidden",
+      // Huge AUQ bodies (long questions / many options with previews) must not
+      // outgrow the viewport — this block is pinned OUTSIDE the chat scroll area,
+      // so cap the card and let the question body scroll internally while the
+      // header and action row stay visible.
+      display: "flex", flexDirection: "column",
+      maxHeight: "min(60vh, 640px)",
     }}>
       {/* Header bar */}
       <div style={{
@@ -2036,6 +2042,7 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers }
         padding: "8px 12px",
         borderBottom: "1px solid var(--border-subtle)",
         background: "var(--bg-deep)",
+        flexShrink: 0,
       }}>
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
@@ -2083,8 +2090,14 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers }
         )}
       </div>
 
-      {/* Question body */}
-      <div style={{ padding: "12px 14px 14px" }}>
+      {/* Question body — the only scrollable region of the card. overscrollBehavior
+          keeps a touch scroll here from chaining into the chat behind it. */}
+      <div style={{
+        padding: "12px 14px 10px",
+        flex: 1, minHeight: 0, overflowY: "auto",
+        WebkitOverflowScrolling: "touch",
+        overscrollBehavior: "contain",
+      }}>
         {/* Per-question sub-header (multi-question only) */}
         {total > 1 && q.header && (
           <div style={{ fontSize: 11, color: "var(--accent-blue)", fontWeight: 600, marginBottom: 4 }}>{q.header}</div>
@@ -2228,8 +2241,16 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers }
           </div>
         )}
 
-        {/* Action row */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+      </div>
+
+      {/* Action row — pinned below the scrollable body so Skip/Prev/Next/Submit
+          stay reachable even when a huge question body scrolls. */}
+      <div style={{
+        flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "8px 14px 12px",
+        borderTop: "1px solid var(--border-subtle)",
+      }}>
           <button
             onClick={doDecline}
             style={{
@@ -2285,7 +2306,6 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers }
                 </button>
               )
             )}
-          </div>
         </div>
       </div>
     </div>
