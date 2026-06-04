@@ -110,6 +110,12 @@ export function TerminalPane({ wsUrl, sessionId, scrollMode = "pty", onDisconnec
   // Tracks net upward scroll depth in tmux mode (for overlay button visibility)
   const mouseScrollDepthRef = useRef(0);
   const [copyToast, setCopyToast] = useState(false);
+  // Touch devices get on-screen ▲▼ page buttons (a swipe alone is easy to miss,
+  // and tmux-mode history lives server-side). pageScrollRef is populated inside
+  // the main effect so the buttons can reach `ws`/`term`.
+  const isTouch = typeof window !== "undefined" &&
+    ("ontouchstart" in window || navigator.maxTouchPoints > 0);
+  const pageScrollRef = useRef<((dir: "up" | "down") => void) | null>(null);
 
 
   const showCopyToast = () => {
@@ -224,16 +230,37 @@ export function TerminalPane({ wsUrl, sessionId, scrollMode = "pty", onDisconnec
       touchStartY = e.touches[0].clientY;
       touchLastY = touchStartY;
     }, { passive: true });
+    // Apply a scroll of `lines` (negative = up/into history). In tmux mode the
+    // history lives server-side, so we send copy-mode scroll messages exactly
+    // like the wheel handler; in pty mode xterm's own scrollback is used.
+    const applyScroll = (lines: number) => {
+      if (lines === 0) return;
+      if (scrollMode === "tmux") {
+        ws.sendScroll(lines);
+        if (lines < 0) {
+          mouseScrollDepthRef.current += Math.abs(lines);
+          if (!scrolledUpRef.current) { scrolledUpRef.current = true; setScrolledUp(true); }
+        } else if (mouseScrollDepthRef.current > 0) {
+          mouseScrollDepthRef.current = Math.max(0, mouseScrollDepthRef.current - lines);
+          if (mouseScrollDepthRef.current === 0) { scrolledUpRef.current = false; setScrolledUp(false); }
+        }
+      } else {
+        term.scrollLines(lines);
+        requestAnimationFrame(updateScrolledUp);
+      }
+    };
+    // One-screen page scroll, used by the ▲▼ touch buttons.
+    pageScrollRef.current = (dir) => applyScroll((dir === "up" ? -1 : 1) * Math.max(1, term.rows - 2));
+
     el.addEventListener("touchmove", (e) => {
-      if (scrollMode === "tmux") return;
       if (inTouchSelection) return; // selection drag — handled by capture-phase listener below
       e.preventDefault();
       const y = e.touches[0].clientY;
       const delta = touchLastY - y;
       touchLastY = y;
-      const lines = Math.round(delta / 20) || (delta > 0 ? 1 : -1);
       if (Math.abs(delta) < 2) return;
-      term.scrollLines(lines);
+      // Swipe down (delta<0) reveals older history (scroll up), matching native feel.
+      applyScroll(Math.round(delta / 20) || (delta > 0 ? 1 : -1));
     }, { passive: false });
 
     const fitAddon = new FitAddon();
@@ -710,6 +737,28 @@ export function TerminalPane({ wsUrl, sessionId, scrollMode = "pty", onDisconnec
         )}
         {copyToast && (
           <div style={toastStyle}>Copied</div>
+        )}
+        {isTouch && (
+          <div style={{
+            position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+            display: "flex", flexDirection: "column", gap: 8, zIndex: 10,
+          }}>
+            {([["up", "▲"], ["down", "▼"]] as const).map(([dir, glyph]) => (
+              <button
+                key={dir}
+                onPointerDown={(e) => { e.preventDefault(); pageScrollRef.current?.(dir); }}
+                aria-label={dir === "up" ? "Scroll up one screen" : "Scroll down one screen"}
+                style={{
+                  width: 36, height: 36, borderRadius: 18,
+                  background: "rgba(0,0,0,0.4)", color: "rgba(255,255,255,0.95)",
+                  border: "1px solid rgba(255,255,255,0.18)", fontSize: 14,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  padding: 0, cursor: "pointer", userSelect: "none",
+                  boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
+                }}
+              >{glyph}</button>
+            ))}
+          </div>
         )}
         {showWideToggle && !disableFit && (
           <button

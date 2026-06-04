@@ -180,6 +180,7 @@ func (a *App) Start(ctx context.Context) {
 	go a.Term.Sweeper(ctx)
 	go a.runTaskScheduler(ctx)
 	go a.runProxyTapCleanup(ctx)
+	go a.runShadowBackup(ctx)
 }
 
 // Close releases resources.

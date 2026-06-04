@@ -170,9 +170,18 @@ func (s *Service) runEnv(ctx context.Context, dir string, extraEnv map[string]st
 
 // runStdin runs git feeding `input` on stdin (used for commit -F -).
 func (s *Service) runStdin(ctx context.Context, dir, input string, args ...string) (stdout, stderr string, err error) {
+	return s.runStdinEnv(ctx, dir, nil, input, args...)
+}
+
+// runStdinEnv is like runStdin but appends extra env vars (used by the shadow
+// repo to inject GIT_DIR / GIT_WORK_TREE for commit -F -).
+func (s *Service) runStdinEnv(ctx context.Context, dir string, extraEnv map[string]string, input string, args ...string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
+	}
+	if len(extraEnv) > 0 {
+		cmd.Env = appendEnv(extraEnv)
 	}
 	cmd.Stdin = stringReader(input)
 	var out, errBuf bufferString

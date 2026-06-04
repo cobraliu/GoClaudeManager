@@ -1274,10 +1274,38 @@ export interface GitLogEntry {
 
 export interface GitInfo {
   is_repo: boolean;
-  auto_commit: boolean;
   log: GitLogEntry[];  // full history, pagination done client-side
   gitignore: string;
   remote: string;
+}
+
+// ── Shadow-git rewind system ──────────────────────────────────────────────────
+export interface RewindPoint {
+  hash: string;
+  short_hash: string;
+  subject: string;
+  body: string;
+  ts: number;       // unix seconds
+  prompt: string;   // best-effort user prompt for this point
+  session: string;  // session id that produced it
+}
+
+export interface ShadowRestoreResult {
+  ok: boolean;
+  restored_from: string; // the rewind point that was restored
+  new_hash: string;      // new point capturing the restored state
+  before_hash: string;   // point capturing the pre-restore state (use to "go back")
+}
+
+export interface ShadowFileChange {
+  status: string;
+  path: string;
+}
+
+export interface ShadowPreview {
+  hash: string;
+  files: ShadowFileChange[];
+  diff: string;
 }
 
 export interface GitDiffFile {
@@ -1304,18 +1332,49 @@ export function gitInit(sessionId: string): Promise<{ output: string }> {
   return request(`/api/sessions/${sessionId}/git/init`, { method: "POST" });
 }
 
-export function setGitAutoCommit(sessionId: string, enabled: boolean): Promise<{ auto_commit: boolean }> {
-  return request(`/api/sessions/${sessionId}/git/auto-commit`, {
-    method: "PUT",
-    body: JSON.stringify({ enabled }),
+export function gitManualCommit(sessionId: string, message: string): Promise<{ committed: boolean; output: string }> {
+  return request(`/api/sessions/${sessionId}/git/commit`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
   });
 }
 
-export function gitManualCommit(sessionId: string, message?: string): Promise<{ committed: boolean; output: string }> {
-  return request(`/api/sessions/${sessionId}/git/commit`, {
+export function shadowLog(sessionId: string, limit = 200): Promise<{ branch: string; points: RewindPoint[] }> {
+  return request(`/api/sessions/${sessionId}/shadow/log?limit=${limit}`);
+}
+
+export function shadowShow(sessionId: string, hash: string): Promise<{ hash: string; message: string; files: { status: string; path: string }[] }> {
+  return request(`/api/sessions/${sessionId}/shadow/show/${hash}`);
+}
+
+export interface ShadowCommitDetail {
+  hash: string;
+  message: string;
+  files: GitDiffFile[]; // per-file old/new content, for the side-by-side diff modal
+}
+
+export function shadowCommitDetail(sessionId: string, hash: string): Promise<ShadowCommitDetail> {
+  return request(`/api/sessions/${sessionId}/shadow/commit/${hash}`);
+}
+
+export function shadowDiff(sessionId: string, hash: string, path?: string): Promise<{ diff: string; hash: string }> {
+  const q = path ? `&path=${encodeURIComponent(path)}` : "";
+  return request(`/api/sessions/${sessionId}/shadow/diff?hash=${hash}${q}`);
+}
+
+export function shadowRestorePreview(sessionId: string, hash: string): Promise<ShadowPreview> {
+  return request(`/api/sessions/${sessionId}/shadow/restore-preview?hash=${hash}`);
+}
+
+export function shadowRestore(sessionId: string, hash: string): Promise<ShadowRestoreResult> {
+  return request(`/api/sessions/${sessionId}/shadow/restore`, {
     method: "POST",
-    body: JSON.stringify({ message: message || null }),
+    body: JSON.stringify({ hash }),
   });
+}
+
+export function shadowSnapshot(sessionId: string): Promise<{ committed: boolean; hash: string; branch: string }> {
+  return request(`/api/sessions/${sessionId}/shadow/snapshot`, { method: "POST" });
 }
 
 export function gitRollback(sessionId: string, commit_hash: string): Promise<{ output: string }> {

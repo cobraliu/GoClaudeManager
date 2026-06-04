@@ -5,7 +5,6 @@ import {
   getGitInfo,
   getCommitDetail,
   searchGitCommits,
-  setGitAutoCommit,
   gitManualCommit,
   gitRollback,
   gitDiff,
@@ -20,6 +19,7 @@ import {
 import { GitGraph } from "./GitGraph";
 import { ConfirmAffectingChangeModal } from "./GitBranchPicker";
 import { MergeTab } from "./MergeTab";
+import { ShadowRewindSection } from "./ShadowRewindSection";
 
 interface Props {
   sessionId: string;
@@ -258,7 +258,7 @@ function SideBySideDiff({
 }
 
 /* ─── Diff viewer modal ─── */
-function DiffViewer({ files, title, hashes, onClose, zIndex = 5000 }: { files: GitDiffFile[]; title?: string; hashes?: { hash: string; date: string }[]; onClose: () => void; zIndex?: number }) {
+export function DiffViewer({ files, title, hashes, onClose, zIndex = 5000 }: { files: GitDiffFile[]; title?: string; hashes?: { hash: string; date: string }[]; onClose: () => void; zIndex?: number }) {
   const [mode, setMode] = useState<"full" | "onlydiff">("onlydiff");
   if (!files.length) return null;
   return (
@@ -428,7 +428,9 @@ const PAGE_SIZE = 20;
 
 /* ─── Git Panel ─── */
 export function GitPanel({ sessionId, onClose, inline = false }: Props) {
-  const [autoCommit, setAutoCommit] = useState(false);
+  // Manual commit form (subject required, body optional).
+  const [commitSubject, setCommitSubject] = useState("");
+  const [commitBody, setCommitBody] = useState("");
   // allLog holds the complete history fetched once on open
   const [allLog, setAllLog] = useState<GitLogEntry[]>([]);
   const [logPage, setLogPage] = useState(0);
@@ -471,7 +473,6 @@ export function GitPanel({ sessionId, onClose, inline = false }: Props) {
         getGitBranches(sessionId).catch(() => ({ current: "", local: [] }) as GitBranchInfo),
         getMergeStatus(sessionId).catch(() => null),
       ]);
-      setAutoCommit(info.auto_commit);
       setAllLog(info.log);
       setGitignore(info.gitignore ?? "");
       setRemote(info.remote ?? "");
@@ -554,20 +555,17 @@ export function GitPanel({ sessionId, onClose, inline = false }: Props) {
     setLogPage(0);
   };
 
-  const handleAutoCommitToggle = async () => {
-    const newVal = !autoCommit;
-    setBusyId("auto");
-    try {
-      await setGitAutoCommit(sessionId, newVal);
-      setAutoCommit(newVal);
-    } catch (e) { setMsg(String(e)); } finally { setBusyId(null); }
-  };
-
   const handleManualCommit = async () => {
+    const subject = commitSubject.trim();
+    if (!subject) return;
     setBusyId("commit");
     try {
-      const res = await gitManualCommit(sessionId);
+      const body = commitBody.trim();
+      const message = body ? `${subject}\n\n${body}` : subject;
+      const res = await gitManualCommit(sessionId, message);
       setMsg(res.committed ? `Committed.` : "Nothing to commit.");
+      setCommitSubject("");
+      setCommitBody("");
       load();
     } catch (e) { setMsg(String(e)); } finally { setBusyId(null); }
   };
@@ -742,17 +740,35 @@ export function GitPanel({ sessionId, onClose, inline = false }: Props) {
                   </button>
                 </div>
               )}
-              {/* ── Controls row ── */}
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 13, color: "var(--text-body)" }}>
-                  <input type="checkbox" checked={autoCommit} disabled={busyId === "auto"} onChange={handleAutoCommitToggle} style={{ cursor: "pointer" }} />
-                  Auto-commit after each reply
-                </label>
-                <button disabled={busyId === "commit"} onClick={handleManualCommit}
-                  style={{ background: "var(--text-faintest)", color: "var(--text-secondary)", fontSize: 11, padding: "4px 12px", marginLeft: "auto" }}>
-                  {busyId === "commit" ? "..." : "Commit now"}
-                </button>
+              {/* ── Commit form (subject required, body optional) ── */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    value={commitSubject}
+                    onChange={(e) => setCommitSubject(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleManualCommit(); }}
+                    placeholder="Commit subject (required)"
+                    style={{ flex: 1, fontSize: 13, padding: "5px 8px", background: "var(--bg-sidebar)", border: "1px solid var(--bg-hover)", borderRadius: 6, color: "var(--text-body)" }}
+                  />
+                  <button
+                    disabled={busyId === "commit" || !commitSubject.trim()}
+                    onClick={handleManualCommit}
+                    title="提交真实工作目录(Cmd/Ctrl+Enter)"
+                    style={{ background: "var(--accent-blue)", color: "#fff", fontSize: 11, padding: "5px 14px", borderRadius: 6, opacity: commitSubject.trim() ? 1 : 0.5, cursor: commitSubject.trim() ? "pointer" : "not-allowed", flexShrink: 0 }}>
+                    {busyId === "commit" ? "..." : "Commit now"}
+                  </button>
+                </div>
+                <textarea
+                  value={commitBody}
+                  onChange={(e) => setCommitBody(e.target.value)}
+                  placeholder="Body (optional)"
+                  rows={2}
+                  style={{ fontSize: 12, padding: "5px 8px", background: "var(--bg-sidebar)", border: "1px solid var(--bg-hover)", borderRadius: 6, color: "var(--text-body)", resize: "vertical", fontFamily: "inherit" }}
+                />
               </div>
+
+              {/* ── Rewind points (shadow git, independent of the real .git) ── */}
+              <ShadowRewindSection sessionId={sessionId} />
 
               {/* ── Remote / Push + .gitignore row ── */}
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>

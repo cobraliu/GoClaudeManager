@@ -280,16 +280,6 @@ func (s *Store) UpdateCodexAppserverEndpoint(id string, pid, port *int) error {
 		pid, port, nowISO(), id)
 	return err
 }
-func (s *Store) SetGitAutoCommit(id string, enabled bool) error {
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	v := 0
-	if enabled {
-		v = 1
-	}
-	_, err := s.DB.Exec(`UPDATE sessions SET git_auto_commit = ? WHERE id = ?`, v, id)
-	return err
-}
 func (s *Store) UpdateGitMsgCount(id string, count int) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()

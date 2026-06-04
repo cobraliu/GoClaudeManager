@@ -10,7 +10,6 @@ import (
 
 	"github.com/loki/goclaudemanager/internal/auth"
 	"github.com/loki/goclaudemanager/internal/git"
-	"github.com/loki/goclaudemanager/internal/jsonl"
 	"github.com/loki/goclaudemanager/internal/model"
 )
 
@@ -39,7 +38,6 @@ func registerGitRoutes(r chi.Router, d Deps) {
 	r.Post("/{id}/git/merge/continue", func(w http.ResponseWriter, r *http.Request) { gitMergeContinue(d, w, r) })
 	r.Post("/{id}/git/merge/abort", func(w http.ResponseWriter, r *http.Request) { gitMergeAbort(d, w, r) })
 
-	r.Put("/{id}/git/auto-commit", func(w http.ResponseWriter, r *http.Request) { gitAutoCommit(d, w, r) })
 	r.Post("/{id}/git/commit", func(w http.ResponseWriter, r *http.Request) { gitCommit(d, w, r) })
 	r.Post("/{id}/git/rollback", func(w http.ResponseWriter, r *http.Request) { gitRollback(d, w, r) })
 	r.Get("/{id}/git/show/{commit_hash}", func(w http.ResponseWriter, r *http.Request) { gitShow(d, w, r) })
@@ -47,6 +45,15 @@ func registerGitRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}/git/file-show", func(w http.ResponseWriter, r *http.Request) { gitFileShow(d, w, r) })
 	r.Get("/{id}/git/file-diff", func(w http.ResponseWriter, r *http.Request) { gitFileDiff(d, w, r) })
 	r.Post("/{id}/git/diff", func(w http.ResponseWriter, r *http.Request) { gitDiff(d, w, r) })
+
+	// Shadow-git rewind system (independent of the real .git) — shadow_routes.go.
+	r.Get("/{id}/shadow/log", func(w http.ResponseWriter, r *http.Request) { shadowLogHandler(d, w, r) })
+	r.Get("/{id}/shadow/show/{commit_hash}", func(w http.ResponseWriter, r *http.Request) { shadowShowHandler(d, w, r) })
+	r.Get("/{id}/shadow/commit/{commit_hash}", func(w http.ResponseWriter, r *http.Request) { shadowCommitHandler(d, w, r) })
+	r.Get("/{id}/shadow/diff", func(w http.ResponseWriter, r *http.Request) { shadowDiffHandler(d, w, r) })
+	r.Get("/{id}/shadow/restore-preview", func(w http.ResponseWriter, r *http.Request) { shadowRestorePreviewHandler(d, w, r) })
+	r.Post("/{id}/shadow/restore", func(w http.ResponseWriter, r *http.Request) { shadowRestoreHandler(d, w, r) })
+	r.Post("/{id}/shadow/snapshot", func(w http.ResponseWriter, r *http.Request) { shadowSnapshotHandler(d, w, r) })
 }
 
 // gitRequireRepo resolves the owned session and ensures cwd is a git repo,
@@ -81,11 +88,10 @@ func gitInfo(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	remote := d.Git.GetRemote(s.Cwd)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"is_repo":     true,
-		"auto_commit": s.GitAutoCommit,
-		"log":         allLog,
-		"gitignore":   gitignore,
-		"remote":      remote,
+		"is_repo":   true,
+		"log":       allLog,
+		"gitignore": gitignore,
+		"remote":    remote,
 	})
 }
 
@@ -475,38 +481,15 @@ func gitMergeAbort(d Deps, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": result.Output})
 }
 
-// ── PUT /{id}/git/auto-commit ────────────────────────────────────────────────
-
-type gitAutoCommitBody struct {
-	Enabled bool `json:"enabled"`
-}
-
-func gitAutoCommit(d Deps, w http.ResponseWriter, r *http.Request) {
-	s := resolveOwned(d, w, r)
-	if s == nil {
-		return
-	}
-	var body gitAutoCommitBody
-	if !readJSON(w, r, &body) {
-		return
-	}
-	if body.Enabled && !d.Git.IsRepo(s.Cwd) {
-		writeErr(w, http.StatusBadRequest, "not a git repo; run git init first")
-		return
-	}
-	if err := d.Store.SetGitAutoCommit(s.ID, body.Enabled); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"auto_commit": body.Enabled})
-}
-
 // ── POST /{id}/git/commit ────────────────────────────────────────────────────
 
 type gitCommitBody struct {
 	Message *string `json:"message"`
 }
 
+// gitCommit commits the real working tree. The message (subject + optional body)
+// is now always user-supplied — there is no auto-generation. An empty message is
+// rejected so a commit is never made with a placeholder subject.
 func gitCommit(d Deps, w http.ResponseWriter, r *http.Request) {
 	s := resolveOwned(d, w, r)
 	if s == nil {
@@ -520,26 +503,15 @@ func gitCommit(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "not a git repo")
 		return
 	}
-	who := auth.FromContext(r.Context())
 	msg := ""
 	if body.Message != nil {
-		msg = *body.Message
-	}
-	if msg == "" && s.AgentSessionID != nil && *s.AgentSessionID != "" {
-		info, _ := jsonl.GetLatestTurnInfo(*s.AgentSessionID, s.Cwd, 0)
-		if info.LastSummary != "" {
-			prompts := make([]git.PromptEntry, 0, len(info.PromptsSince))
-			for _, p := range info.PromptsSince {
-				prompts = append(prompts, git.PromptEntry{Text: p.Text, TS: p.Ts, TimeStr: p.TimeStr})
-			}
-			msg = git.MakeCommitMessage(prompts, info.LastSummary)
-		} else {
-			msg = "Manual commit"
-		}
+		msg = strings.TrimSpace(*body.Message)
 	}
 	if msg == "" {
-		msg = "Manual commit"
+		writeErr(w, http.StatusBadRequest, "commit message required")
+		return
 	}
+	who := auth.FromContext(r.Context())
 	result := d.Git.AddCommit(r.Context(), s.Cwd, msg, who.Username)
 	if !result.OK {
 		writeErr(w, http.StatusInternalServerError, result.Output)

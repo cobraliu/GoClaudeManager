@@ -25,7 +25,6 @@ import {
   createTask,
   cancelTask,
   restartServer,
-  setGitAutoCommit,
   saveGitignore,
   gitSetRemote,
   listFiles,
@@ -119,6 +118,7 @@ import { ConfigFormatToggle } from "../components/ConfigFormatToggle";
 import { ConfigCheckButton } from "../components/ConfigCheckButton";
 import { ConfigValidationBanner } from "../components/ConfigValidationBanner";
 import { detectFormat, convert, extFor, type ConfigFormat } from "../lib/configConvert";
+import { ShadowRewindSection } from "../components/ShadowRewindSection";
 import { TerminalPane } from "../components/TerminalPane";
 import { TuiPane } from "../components/TuiPane";
 import { ConversationPane } from "../components/ConversationPane";
@@ -1106,7 +1106,9 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
   const [viewMode, setViewMode] = useState<"list" | "graph">("list");
   const [graphCommits, setGraphCommits] = useState<GitGraphCommit[] | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
-  const [autoCommit, setAutoCommit] = useState(session.git_auto_commit);
+  const [showCommit, setShowCommit] = useState(false);
+  const [commitSubject, setCommitSubject] = useState("");
+  const [commitBody, setCommitBody] = useState("");
   const [gitignore, setGitignore] = useState("");
   const [gitignoreDraft, setGitignoreDraft] = useState("");
   const [editingGitignore, setEditingGitignore] = useState(false);
@@ -1137,7 +1139,7 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
         if (info) {
           setIsRepo(info.is_repo); setLog(info.log);
           setGitignore(info.gitignore ?? ""); setGitignoreDraft(info.gitignore ?? "");
-          setAutoCommit(info.auto_commit); setRemote(info.remote ?? ""); setRemoteInput(info.remote ?? "");
+          setRemote(info.remote ?? ""); setRemoteInput(info.remote ?? "");
         }
         setBranches(br);
         setMergeStatus(ms);
@@ -1274,19 +1276,10 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
         {isRepo && (
           <div style={{ padding: "0 12px 10px 12px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <button
-              disabled={committing}
-              onClick={async () => {
-                setCommitting(true);
-                try {
-                  const res = await gitManualCommit(sessionId);
-                  setMsg({ text: res.committed ? res.output || "Committed" : "Nothing to commit", ok: res.committed });
-                  if (res.committed) { const info = await getGitInfo(sessionId); setLog(info.log); }
-                } catch (e) { setMsg({ text: String(e), ok: false }); }
-                finally { setCommitting(false); }
-              }}
-              style={{ fontSize: 11, padding: "4px 12px", background: "var(--bg-hover)", color: committing ? "var(--text-muted)" : "var(--accent-green)", border: "1px solid #2d5a2d", borderRadius: 5 }}
+              onClick={() => setShowCommit(v => !v)}
+              style={{ fontSize: 11, padding: "4px 12px", background: "var(--bg-hover)", color: "var(--accent-green)", border: "1px solid #2d5a2d", borderRadius: 5 }}
             >
-              {committing ? "…" : "Commit"}
+              {showCommit ? "Cancel" : "Commit"}
             </button>
             <button
               onClick={() => setEditingGitignore(true)}
@@ -1300,23 +1293,54 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
             >
               Merge
             </button>
-            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Auto commit</span>
-              <button
-                onClick={async () => {
-                  const next = !autoCommit;
-                  if (!next && !window.confirm("Disable auto-commit? Claude replies will no longer trigger automatic git commits.")) return;
-                  try {
-                    await setGitAutoCommit(sessionId, next);
-                    setAutoCommit(next);
-                    onSessionChange({ ...session, git_auto_commit: next });
-                  } catch {}
-                }}
-                style={{ width: 36, height: 20, borderRadius: 10, background: autoCommit ? "var(--accent-green)" : "var(--border)", border: "none", cursor: "pointer", position: "relative", flexShrink: 0 }}
-              >
-                <span style={{ position: "absolute", top: 2, left: autoCommit ? 18 : 2, width: 16, height: 16, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
-              </button>
-            </div>
+          </div>
+        )}
+
+        {/* Commit form (subject required, body optional) */}
+        {isRepo && showCommit && (
+          <div style={{ padding: "0 12px 10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+            <input
+              value={commitSubject}
+              onChange={(e) => setCommitSubject(e.target.value)}
+              placeholder="Commit subject (required)"
+              style={{ fontSize: 13, padding: "7px 9px", background: "var(--bg-base)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)" }}
+            />
+            <textarea
+              value={commitBody}
+              onChange={(e) => setCommitBody(e.target.value)}
+              placeholder="Body (optional)"
+              rows={3}
+              style={{ fontSize: 12, padding: "7px 9px", background: "var(--bg-base)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-primary)", resize: "vertical", fontFamily: "inherit" }}
+            />
+            <button
+              disabled={committing || !commitSubject.trim()}
+              onClick={async () => {
+                const subject = commitSubject.trim();
+                if (!subject) return;
+                setCommitting(true);
+                try {
+                  const body = commitBody.trim();
+                  const message = body ? `${subject}\n\n${body}` : subject;
+                  const res = await gitManualCommit(sessionId, message);
+                  setMsg({ text: res.committed ? res.output || "Committed" : "Nothing to commit", ok: res.committed });
+                  if (res.committed) {
+                    const info = await getGitInfo(sessionId); setLog(info.log);
+                    setCommitSubject(""); setCommitBody(""); setShowCommit(false);
+                  }
+                } catch (e) { setMsg({ text: String(e), ok: false }); }
+                finally { setCommitting(false); }
+              }}
+              style={{ fontSize: 12, padding: "8px 12px", background: "var(--accent-blue)", color: "#fff", border: "none", borderRadius: 6, opacity: commitSubject.trim() ? 1 : 0.5 }}
+            >
+              {committing ? "…" : "Commit now"}
+            </button>
+          </div>
+        )}
+
+        {/* Rewind points (shadow git — independent of the real .git) */}
+        {isRepo && (
+          <div style={{ padding: "0 12px 10px 12px" }}>
+            <ShadowRewindSection sessionId={sessionId} />
           </div>
         )}
       </div>
