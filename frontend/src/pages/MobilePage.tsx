@@ -98,6 +98,7 @@ import {
   type UsageInfo,
   type TuiAuqData,
   type TuiApproveData,
+  type TuiPlanData,
   type LostMessage,
   getUsageInfo,
   createShare,
@@ -5083,6 +5084,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
   const [tuiHintDismissed, setTuiHintDismissed] = useState(false);
   const [tuiAuqData, setTuiAuqData] = useState<TuiAuqData | null>(null);
   const [tuiApproveData, setTuiApproveData] = useState<TuiApproveData | null>(null);
+  const [tuiPlanData, setTuiPlanData] = useState<TuiPlanData | null>(null);
   const [lostMessages, setLostMessages] = useState<LostMessage[]>([]);
   const [compactingProgress, setCompactingProgress] = useState<string | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
@@ -5203,6 +5205,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
           });
           setTuiAuqData(st.tui_auq_data ?? null);
           setTuiApproveData(st.tui_approve_data ?? null);
+          setTuiPlanData(st.tui_plan_data ?? null);
           setLostMessages(st.lost_messages ?? []);
           setIsCompacting(!!st.is_compacting);
           setCompactingProgress(st.compacting_progress ?? null);
@@ -5521,6 +5524,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
           isWaitingForAuq={!!tuiHint?.includes("asking a question")}
           pendingAuqData={tuiAuqData}
           pendingApproveData={tuiApproveData}
+          pendingPlanData={tuiPlanData}
           lostMessages={lostMessages}
           stopRef={stopResponseRef}
           refreshRef={convRefreshRef}
@@ -6086,7 +6090,12 @@ export function MobilePage({ username, onLogout, onSwitchToAdmin, onOpenTool, th
   return (
     <>
       {openSession
-        ? <DetailView session={openSession} onBack={closeDetail} username={username} onLogout={onLogout} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />
+        // key forces a full remount when the attention banner jumps to ANOTHER
+        // session while a DetailView is already open: DetailView seeds its
+        // internal `session` state from the prop once on mount and never syncs
+        // it afterwards, so without the key the jump changed openSession but
+        // the UI stayed pinned on the old session.
+        ? <DetailView key={openSession.id} session={openSession} onBack={closeDetail} username={username} onLogout={onLogout} onSwitchToAdmin={onSwitchToAdmin} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />
         : <ListView username={username} onLogout={onLogout} onOpen={openDetail} onSwitchToAdmin={onSwitchToAdmin} onOpenTool={onOpenTool} theme={theme} onToggleTheme={onToggleTheme} terminalFont={terminalFont} onTerminalFontChange={setTerminalFontState} />}
       <MobileAttentionBanner items={bannerItems} onJump={jumpToSession} />
     </>

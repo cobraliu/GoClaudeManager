@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { sendCodexMessage } from "../api/sessionApi";
 import {
   inputDrafts,
@@ -8,6 +8,7 @@ import {
   touchDraft,
   loadInputHeight,
   startInputHeightDrag,
+  inputHeightMax,
   INPUT_HEIGHT_MIN,
   DRAFT_HEARTBEAT_MS,
 } from "../lib/sessionInputPersist";
@@ -29,6 +30,17 @@ export default function CodexChatInput({ sessionId, onSent }: Props) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow: mirror of ConversationPane — the textarea expands with content
+  // past the base height up to inputHeightMax(), shrinking back as content is
+  // removed. Height is written directly to the DOM so measurement (collapse →
+  // scrollHeight) doesn't fight React. +2 = borders (border-box).
+  useLayoutEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "0px";
+    ta.style.height = `${Math.max(inputHeight, Math.min(ta.scrollHeight + 2, inputHeightMax()))}px`;
+  }, [text, inputHeight]);
 
   // Heartbeat: refresh updatedAt while the user stares at a draft so a
   // long-running compose doesn't get reaped at 10min boundary. touchDraft (not
@@ -84,24 +96,25 @@ export default function CodexChatInput({ sessionId, onSent }: Props) {
         borderTop: "1px solid var(--border)",
       }}
     >
-      {/* Top grip: mirror of ConversationPane's drag-to-resize handle. */}
+      {/* Top grip: mirror of ConversationPane's drag-to-resize handle (pointer
+          events + touch-action:none so it also works on mobile, 3× cap there). */}
       <div
-        onMouseDown={(e) => {
+        onPointerDown={(e) => {
           startInputHeightDrag({
             sessionId,
             startClientY: e.clientY,
             startHeight: inputHeight,
-            maxHeight: window.innerHeight * 0.75,
+            maxHeight: inputHeightMax(),
             onChange: setInputHeight,
           });
         }}
         title="Drag to resize input"
         style={{
-          height: 6, cursor: "ns-resize", display: "flex", alignItems: "center", justifyContent: "center",
-          background: "transparent",
+          height: 14, cursor: "ns-resize", display: "flex", alignItems: "center", justifyContent: "center",
+          background: "transparent", touchAction: "none",
         }}
       >
-        <div style={{ width: 40, height: 3, borderRadius: 2, background: "var(--text-faintest)" }} />
+        <div style={{ width: 40, height: 4, borderRadius: 2, background: "var(--text-faintest)" }} />
       </div>
       {error && (
         <div style={{ fontSize: 11, color: "#ef4444", padding: "0 8px 4px" }}>{error}</div>
@@ -124,7 +137,7 @@ export default function CodexChatInput({ sessionId, onSent }: Props) {
             fontSize: 13,
             fontFamily: "inherit",
             outline: "none",
-            height: inputHeight,
+            // height is managed by the auto-grow layout effect above.
             minHeight: INPUT_HEIGHT_MIN,
           }}
         />

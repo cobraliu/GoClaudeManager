@@ -15,11 +15,13 @@ import {
   cleanupExpiredDrafts,
   loadInputHeight,
   startInputHeightDrag,
+  inputHeightMax,
   INPUT_HEIGHT_MIN,
   DRAFT_HEARTBEAT_MS,
   DRAFT_CLEANUP_MS,
 } from "../lib/sessionInputPersist";
 import { PromptHistoryPopover } from "./PromptHistoryPopover";
+import { copyTextDetect, selectElementContents } from "../lib/copyText";
 
 const POLL_MS = 1500;
 // Idle cadence: when the session is not streaming/compacting/waiting and no
@@ -763,21 +765,28 @@ function FormatModal({ text, lang, allowMarkdown = false, onClose }: { text: str
 }
 
 function CopyButton({ getText }: { getText: () => string }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = () => {
-    navigator.clipboard.writeText(getText()).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    });
+  const [state, setState] = useState<"idle" | "ok" | "fail">("idle");
+  const handleCopy = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    const btn = e.currentTarget;
+    const ok = await copyTextDetect(getText());
+    if (!ok) {
+      // Copy unavailable (plain-HTTP mobile): select the adjacent code block so
+      // the user can long-press the selection and copy manually.
+      const target = btn.parentElement?.querySelector("pre") ?? btn.parentElement;
+      if (target) selectElementContents(target as HTMLElement);
+    }
+    setState(ok ? "ok" : "fail");
+    setTimeout(() => setState("idle"), ok ? 1200 : 3000);
   };
   return (
     <button
       onClick={handleCopy}
-      title="Copy"
+      title={state === "fail" ? "自动复制不可用——内容已全选，请长按选区复制" : "Copy"}
       style={{
         position: "absolute", top: 5, right: 6,
         background: "var(--bg-hover)", border: "1px solid var(--border)",
-        borderRadius: 4, color: copied ? "#3fb950" : "var(--text-faint)",
+        borderRadius: 4,
+        color: state === "ok" ? "#3fb950" : state === "fail" ? "#d29922" : "var(--text-faint)",
         fontSize: 11, fontFamily: "monospace", padding: "1px 7px",
         cursor: "pointer", lineHeight: 1.6, opacity: 0.85,
         transition: "opacity 0.12s, color 0.12s",
@@ -785,7 +794,7 @@ function CopyButton({ getText }: { getText: () => string }) {
       onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
       onMouseLeave={e => (e.currentTarget.style.opacity = "0.85")}
     >
-      {copied ? "✓" : "⧉"}
+      {state === "ok" ? "✓" : state === "fail" ? "已全选" : "⧉"}
     </button>
   );
 }
@@ -916,12 +925,24 @@ function AssistantMarkdown({ text }: { text: string }) {
       ].join(";");
       btn.addEventListener("mouseenter", () => { btn.style.opacity = "1"; });
       btn.addEventListener("mouseleave", () => { btn.style.opacity = "0.85"; });
-      btn.addEventListener("click", () => {
-        navigator.clipboard.writeText(code.textContent ?? "").then(() => {
+      btn.addEventListener("click", async () => {
+        const ok = await copyTextDetect(code.textContent ?? "");
+        if (ok) {
           btn.textContent = "✓";
           btn.style.color = "#3fb950";
-          setTimeout(() => { btn.textContent = "⧉"; btn.style.color = "var(--text-faint)"; }, 1200);
-        });
+        } else {
+          // Copy unavailable (e.g. plain-HTTP mobile where even execCommand is
+          // blocked): select the whole block so a long-press can copy it.
+          selectElementContents(code);
+          btn.textContent = "已全选";
+          btn.style.color = "#d29922";
+          btn.title = "自动复制不可用——代码已全选，请长按选区复制";
+        }
+        setTimeout(() => {
+          btn.textContent = "⧉";
+          btn.style.color = "var(--text-faint)";
+          btn.title = "Copy";
+        }, ok ? 1200 : 3000);
       });
       pre.appendChild(btn);
     });
@@ -4025,8 +4046,25 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   // and keep it in lock-step on every render and every applied update.
   const messagesRef = useRef<RawMessage[]>([]);
   messagesRef.current = messages;
-  // Input height resizable via top-edge grip (drag up to enlarge).
+  // Input height resizable via top-edge grip (drag up to enlarge). The grip
+  // sets the BASE height; on top of that the textarea auto-grows with content
+  // (see the layout effect below) up to inputHeightMax().
   const [inputHeight, setInputHeight] = useState<number>(() => loadInputHeight(sessionId));
+  // Effective (auto-grown) height — drives the button column layout.
+  const [autoHeight, setAutoHeight] = useState(0);
+  // Auto-grow: once the content wraps past the base height (~2 lines) the
+  // textarea expands with it up to inputHeightMax(), and shrinks back as
+  // content is removed. Height is written directly to the DOM (collapse to 0
+  // → read scrollHeight → set) rather than through the style prop, so the
+  // measurement never fights React. +2 = top/bottom borders (border-box).
+  useLayoutEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "0px";
+    const next = Math.max(inputHeight, Math.min(ta.scrollHeight + 2, inputHeightMax()));
+    ta.style.height = `${next}px`;
+    setAutoHeight(next);
+  }, [input, inputHeight]);
 
   // ── Derived data ─────────────────────────────────────────────────────────
 
@@ -5467,24 +5505,27 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
           (the parent renders CodexChatInput against /codex-message instead). */}
       {!chatOnly && !isCodexAppServer && <div style={{ flexShrink: 0, borderTop: "1px solid var(--bg-hover)", background: "var(--bg-surface)" }}>
         {/* Top grip: drag up to enlarge the input. The textarea sits at the bottom of
-            the page, so resizing must extend upward, not from a corner. */}
+            the page, so resizing must extend upward, not from a corner. Pointer
+            events + touch-action:none so the drag also works on mobile (capped
+            at 3× there — see inputHeightMax); the hit area is taller than the
+            visible bar to be finger-friendly. */}
         <div
-          onMouseDown={(e) => {
+          onPointerDown={(e) => {
             startInputHeightDrag({
               sessionId,
               startClientY: e.clientY,
               startHeight: inputHeight,
-              maxHeight: window.innerHeight * 0.75,
+              maxHeight: inputHeightMax(),
               onChange: setInputHeight,
             });
           }}
           title="Drag to resize input"
           style={{
-            height: 6, cursor: "ns-resize", display: "flex", alignItems: "center", justifyContent: "center",
-            background: "transparent",
+            height: 14, cursor: "ns-resize", display: "flex", alignItems: "center", justifyContent: "center",
+            background: "transparent", touchAction: "none",
           }}
         >
-          <div style={{ width: 40, height: 3, borderRadius: 2, background: "var(--text-faintest)" }} />
+          <div style={{ width: 40, height: 4, borderRadius: 2, background: "var(--text-faintest)" }} />
         </div>
         {/* Hidden file input for attachment upload — triggered by 📎 button below. */}
         <input
@@ -5576,7 +5617,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
               padding: "7px 11px", color: "var(--text-body)",
               fontSize: 13, resize: "none", outline: "none",
               fontFamily: "inherit", lineHeight: 1.5,
-              height: inputHeight,
+              // height is managed by the auto-grow layout effect above.
               opacity: wsStatus !== "connected" ? 0.5 : 1,
             }}
           />
@@ -5588,9 +5629,10 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
             const uploadDisabled = wsStatus !== "connected" || isUploadingAttachment;
             // PC: 32×32 paired buttons. Side-by-side when textarea is short;
             // stack vertically (attachment above send) once the textarea is
-            // tall enough to host both buttons + gap (≥72px). The transition
-            // keeps the bottom-aligned send button anchored in place.
-            const stack = inputHeight >= 72;
+            // tall enough to host both buttons + gap (≥72px). Uses the
+            // effective auto-grown height so typing past ~2 lines flips the
+            // layout too, not just the drag grip.
+            const stack = autoHeight >= 72;
             return (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, flexShrink: 0 }}>
                 <div style={{ display: "flex", flexDirection: stack ? "column" : "row", gap: 4 }}>

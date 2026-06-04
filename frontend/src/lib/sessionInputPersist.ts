@@ -125,11 +125,14 @@ export function saveInputHeight(sessionId: string, h: number): void {
   } catch { /* ignore */ }
 }
 
-// Drag-resize helper: attach window-level mousemove/mouseup listeners that
-// adjust `setHeight` based on cursor delta from the grip's mousedown point.
-// Returns nothing; cleans up its own listeners. Saves the final height to
-// localStorage on mouseup — uses an internal ref so the saved value is the
-// last dragged-to value, not the value captured at mousedown.
+// Drag-resize helper: attach window-level pointermove/pointerup listeners that
+// adjust `setHeight` based on cursor delta from the grip's pointerdown point.
+// Pointer events (not mouse events) so the grip also works with touch on
+// mobile — the grip element must set `touch-action: none` so the browser
+// doesn't turn the drag into a page scroll. Returns nothing; cleans up its own
+// listeners. Saves the final height to localStorage on pointerup — uses an
+// internal ref so the saved value is the last dragged-to value, not the value
+// captured at pointerdown.
 export function startInputHeightDrag(opts: {
   sessionId: string;
   startClientY: number;
@@ -138,7 +141,7 @@ export function startInputHeightDrag(opts: {
   onChange: (h: number) => void;
 }): void {
   const state = { currentH: opts.startHeight };
-  const onMove = (ev: MouseEvent) => {
+  const onMove = (ev: PointerEvent) => {
     const next = Math.max(
       INPUT_HEIGHT_MIN,
       Math.min(opts.maxHeight, opts.startHeight + (opts.startClientY - ev.clientY)),
@@ -148,9 +151,20 @@ export function startInputHeightDrag(opts: {
   };
   const onUp = () => {
     saveInputHeight(opts.sessionId, state.currentH);
-    window.removeEventListener("mousemove", onMove);
-    window.removeEventListener("mouseup", onUp);
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
   };
-  window.addEventListener("mousemove", onMove);
-  window.addEventListener("mouseup", onUp);
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onUp);
+}
+
+// Resize cap: mobile gets 3× the base input height (a taller cap is unusable
+// under the soft keyboard); desktop can go up to 75% of the viewport.
+export function inputHeightMax(): number {
+  try {
+    if (window.matchMedia("(max-width: 767px)").matches) return INPUT_HEIGHT_MIN * 3;
+  } catch { /* matchMedia unavailable — fall through */ }
+  return window.innerHeight * 0.75;
 }
