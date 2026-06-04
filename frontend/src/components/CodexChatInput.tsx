@@ -5,6 +5,7 @@ import {
   loadDraft,
   saveDraft,
   clearDraft,
+  touchDraft,
   loadInputHeight,
   startInputHeightDrag,
   INPUT_HEIGHT_MIN,
@@ -30,10 +31,11 @@ export default function CodexChatInput({ sessionId, onSent }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   // Heartbeat: refresh updatedAt while the user stares at a draft so a
-  // long-running compose doesn't get reaped at 10min boundary.
+  // long-running compose doesn't get reaped at 10min boundary. touchDraft (not
+  // saveDraft) so a stale pane can't resurrect a draft cleared elsewhere.
   useEffect(() => {
     if (!text) return;
-    const id = setInterval(() => { saveDraft(sessionId, text); }, DRAFT_HEARTBEAT_MS);
+    const id = setInterval(() => { touchDraft(sessionId); }, DRAFT_HEARTBEAT_MS);
     return () => clearInterval(id);
   }, [sessionId, text]);
 

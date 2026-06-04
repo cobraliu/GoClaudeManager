@@ -8,8 +8,10 @@ import { apiPath } from "../lib/baseUrl";
 import {
   inputDrafts,
   loadDraft,
+  loadDraftEditedAt,
   saveDraft,
   clearDraft,
+  touchDraft,
   cleanupExpiredDrafts,
   loadInputHeight,
   startInputHeightDrag,
@@ -3962,6 +3964,13 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
     if (persisted) inputDrafts.set(sessionId, persisted);
     return persisted;
   });
+  // Mirror of `input` for callbacks that must read it without re-binding
+  // (fetchMessages' draft reconcile), plus the draft's last REAL edit time —
+  // a user entry in the transcript newer than this means the draft text was
+  // actually delivered and the cache must be dropped (see fetchMessages).
+  const inputRef = useRef(input);
+  useEffect(() => { inputRef.current = input; }, [input]);
+  const inputEditedAtRef = useRef<number>(loadDraftEditedAt(sessionId));
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
   const [optimisticMsgs, setOptimisticMsgs] = useState<OptimisticMsg[]>([]);
   const [lostToast, setLostToast] = useState<string | null>(null);
@@ -4573,6 +4582,20 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
         const tsParsed = m.timestamp ? Date.parse(m.timestamp) : NaN;
         realUserEntries.push({ text, ts: Number.isNaN(tsParsed) ? 0 : tsParsed });
       }
+      // Draft hygiene: a real user entry whose text equals the cached draft and
+      // whose timestamp is newer than the draft's last real edit means the draft
+      // WAS delivered — via the Resend bubble, another tab/device, or typed
+      // straight into the terminal — so drop the cache. Without this, the draft
+      // outlives its own send and gets restored on every refresh (the heartbeat
+      // keeps its TTL alive indefinitely).
+      {
+        const draftText = inputRef.current.trim();
+        if (draftText && realUserEntries.some((e) => e.text === draftText && e.ts > inputEditedAtRef.current)) {
+          setInput("");
+          inputDrafts.delete(sessionId);
+          clearDraft(sessionId);
+        }
+      }
       setOptimisticMsgs((prev) => {
         if (prev.length === 0) return prev;
         const sortedOpt = [...prev].sort((a, b) => a.sentAt - b.sentAt);
@@ -4779,6 +4802,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
             // Restore the text into the input box so the user can edit/retry.
             // Don't clobber what they may have started typing in the meantime.
             setInput((cur) => cur ? cur : text);
+            inputEditedAtRef.current = Date.now();
             if (text) { inputDrafts.set(sessionId, text); saveDraft(sessionId, text); }
           },
           onClose: () => {
@@ -4816,11 +4840,12 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   // ── Input draft persistence ───────────────────────────────────────────────
 
   // Heartbeat: while the tab is open and the draft is non-empty, periodically
-  // re-write to localStorage so its updatedAt timestamp stays fresh and the
-  // TTL sweeper doesn't reap a draft the user is still composing.
+  // bump the record's updatedAt so the TTL sweeper doesn't reap a draft the
+  // user is still composing. touchDraft (not saveDraft) so a stale pane can't
+  // resurrect a draft that a send elsewhere already cleared from storage.
   useEffect(() => {
     if (!input) return;
-    const id = setInterval(() => { saveDraft(sessionId, input); }, DRAFT_HEARTBEAT_MS);
+    const id = setInterval(() => { touchDraft(sessionId); }, DRAFT_HEARTBEAT_MS);
     return () => clearInterval(id);
   }, [sessionId, input]);
 
@@ -4974,6 +4999,14 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
       { id: _randomId(), text, sentAt: Date.now(), status: "pending" },
     ]);
     wsRef.current.sendPrompt(text);
+    // onPromptRejected restored this text into the input + draft cache when the
+    // send was first lost; the resend delivers it, so clear the matching draft
+    // (it used to survive forever and reappear on every refresh).
+    if (inputRef.current.trim() === text.trim()) setInput("");
+    if ((inputDrafts.get(sessionId) ?? "").trim() === text.trim()) {
+      inputDrafts.delete(sessionId);
+      clearDraft(sessionId);
+    }
     stickToBottom.current = true;
     requestAnimationFrame(() => scrollToBottom(false));
   }, [hasUnansweredAuq, scrollToBottom, showTransientToast, sessionId]);
@@ -5526,6 +5559,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
             onChange={(e) => {
               const val = e.target.value;
               setInput(val);
+              inputEditedAtRef.current = Date.now();
               if (val) { inputDrafts.set(sessionId, val); saveDraft(sessionId, val); }
               else { inputDrafts.delete(sessionId); clearDraft(sessionId); }
             }}
@@ -5633,7 +5667,8 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
           mobile={typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches}
           onPick={(text) => {
             setInput(text);
-            try { saveDraft(sessionId, text); } catch {}
+            inputEditedAtRef.current = Date.now();
+            try { inputDrafts.set(sessionId, text); saveDraft(sessionId, text); } catch {}
             textareaRef.current?.focus();
           }}
           onClose={() => setHistoryPopover(null)}
