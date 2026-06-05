@@ -96,10 +96,12 @@ func registerFilesRoutes(r chi.Router, d Deps) {
 	r.Post("/{id}/fs/download-zip", func(w http.ResponseWriter, req *http.Request) { fsDownloadZip(d, w, req) })
 	r.Post("/{id}/fs/sqlite/exec", func(w http.ResponseWriter, req *http.Request) { fsSqliteExec(d, w, req) })
 
-	// Attachment / image uploads.
+	// Attachment / image uploads. The GET /{id}/uploaded-image/{filename}
+	// counterpart is registered in sessionsRouter OUTSIDE the RequireUser
+	// group: <img> tags can't send Authorization headers, so that handler
+	// authenticates its query `token` param itself.
 	r.Post("/{id}/upload-attachment", func(w http.ResponseWriter, req *http.Request) { fsUploadAttachment(d, w, req) })
 	r.Post("/{id}/upload-image", func(w http.ResponseWriter, req *http.Request) { fsUploadAttachment(d, w, req) })
-	r.Get("/{id}/uploaded-image/{filename}", func(w http.ResponseWriter, req *http.Request) { fsServeUploadedImage(d, w, req) })
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────

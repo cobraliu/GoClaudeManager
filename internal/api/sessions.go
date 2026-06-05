@@ -20,38 +20,46 @@ const streamingThresholdSecs = 8
 // (mounted at /api/sessions). Write/lifecycle endpoints land in Phase 2.
 func sessionsRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
-	r.Use(d.Auth.RequireUser)
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) { listSessions(d, w, r) })
-	r.With(d.Auth.RequireAdmin).Get("/all", func(w http.ResponseWriter, r *http.Request) { listAllSessions(d, w, r) })
-	r.Get("/status", func(w http.ResponseWriter, r *http.Request) { listSessionsStatus(d, w, r) })
+	// Served outside the RequireUser group: <img> tags cannot send an
+	// Authorization header, so the handler authenticates the query `token`
+	// param itself (VerifyToken + session-ownership check inside).
+	r.Get("/{id}/uploaded-image/{filename}", func(w http.ResponseWriter, req *http.Request) { fsServeUploadedImage(d, w, req) })
 
-	r.Get("/{id}", func(w http.ResponseWriter, r *http.Request) { getSession(d, w, r) })
-	r.Get("/{id}/prompt-history", func(w http.ResponseWriter, r *http.Request) { getPromptHistory(d, w, r) })
-	r.Delete("/{id}/prompt-history/{entryID}", func(w http.ResponseWriter, r *http.Request) { deletePromptHistoryEntry(d, w, r) })
-	r.Get("/{id}/goals", func(w http.ResponseWriter, r *http.Request) { listGoals(d, w, r) })
-	r.Get("/{id}/todos", func(w http.ResponseWriter, r *http.Request) { listTodos(d, w, r) })
-	r.Get("/{id}/status-bar", func(w http.ResponseWriter, r *http.Request) { statusBar(d, w, r) })
-	r.Get("/{id}/auqs", func(w http.ResponseWriter, r *http.Request) { listAUQs(d, w, r) })
-	r.Get("/{id}/tasks", func(w http.ResponseWriter, r *http.Request) { listTasks(d, w, r) })
-	r.Get("/{id}/conversation", func(w http.ResponseWriter, r *http.Request) { getConversation(d, w, r) })
+	r.Group(func(r chi.Router) {
+		r.Use(d.Auth.RequireUser)
 
-	// Session-scoped code, git, and filesystem routes (ported in parallel).
-	registerCodeRoutes(r, d)
-	registerGitRoutes(r, d)
-	registerFilesRoutes(r, d)
-	// Lifecycle write routes (create/attach/detach/terminate/resume/...).
-	registerSessionWriteRoutes(r, d)
-	// Conversation shares + bash terminals.
-	registerShareRoutes(r, d)
-	registerLostMessageRoutes(r, d)
-	registerTerminalRoutes(r, d, d.Term)
-	// Interactive TUI actions, per-project memory, extra read endpoints, and
-	// external session browsing (ported in parallel).
-	registerTUIActionRoutes(r, d)
-	registerMemoryRoutes(r, d)
-	registerReadExtraRoutes(r, d)
-	registerExternalRoutes(r, d)
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) { listSessions(d, w, r) })
+		r.With(d.Auth.RequireAdmin).Get("/all", func(w http.ResponseWriter, r *http.Request) { listAllSessions(d, w, r) })
+		r.Get("/status", func(w http.ResponseWriter, r *http.Request) { listSessionsStatus(d, w, r) })
+
+		r.Get("/{id}", func(w http.ResponseWriter, r *http.Request) { getSession(d, w, r) })
+		r.Get("/{id}/prompt-history", func(w http.ResponseWriter, r *http.Request) { getPromptHistory(d, w, r) })
+		r.Delete("/{id}/prompt-history/{entryID}", func(w http.ResponseWriter, r *http.Request) { deletePromptHistoryEntry(d, w, r) })
+		r.Get("/{id}/goals", func(w http.ResponseWriter, r *http.Request) { listGoals(d, w, r) })
+		r.Get("/{id}/todos", func(w http.ResponseWriter, r *http.Request) { listTodos(d, w, r) })
+		r.Get("/{id}/status-bar", func(w http.ResponseWriter, r *http.Request) { statusBar(d, w, r) })
+		r.Get("/{id}/auqs", func(w http.ResponseWriter, r *http.Request) { listAUQs(d, w, r) })
+		r.Get("/{id}/tasks", func(w http.ResponseWriter, r *http.Request) { listTasks(d, w, r) })
+		r.Get("/{id}/conversation", func(w http.ResponseWriter, r *http.Request) { getConversation(d, w, r) })
+
+		// Session-scoped code, git, and filesystem routes (ported in parallel).
+		registerCodeRoutes(r, d)
+		registerGitRoutes(r, d)
+		registerFilesRoutes(r, d)
+		// Lifecycle write routes (create/attach/detach/terminate/resume/...).
+		registerSessionWriteRoutes(r, d)
+		// Conversation shares + bash terminals.
+		registerShareRoutes(r, d)
+		registerLostMessageRoutes(r, d)
+		registerTerminalRoutes(r, d, d.Term)
+		// Interactive TUI actions, per-project memory, extra read endpoints, and
+		// external session browsing (ported in parallel).
+		registerTUIActionRoutes(r, d)
+		registerMemoryRoutes(r, d)
+		registerReadExtraRoutes(r, d)
+		registerExternalRoutes(r, d)
+	})
 
 	return r
 }
