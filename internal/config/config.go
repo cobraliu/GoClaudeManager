@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -362,6 +363,45 @@ func (c *Config) ClaudeBin() string {
 
 // SetClaudeBin persists the claude binary path (mirrors set_claude_bin).
 func (c *Config) SetClaudeBin(v string) error { return c.set("claude_bin", v) }
+
+// StructuredBin returns the admin-configured claude-structured wrapper path
+// ("" = unset, fall back to the default next to the server binary). Used by
+// the SDK session transport.
+func (c *Config) StructuredBin() string { return c.get("structured_bin", "") }
+
+// SetStructuredBin persists the claude-structured wrapper path ("" reverts to
+// the default).
+func (c *Config) SetStructuredBin(v string) error { return c.set("structured_bin", v) }
+
+// StructuredBinResolved resolves the wrapper path actually used: the
+// configured value when set, else "claude-structured" in the same directory
+// as the running server binary (scripts/build-structured.sh installs it there).
+func (c *Config) StructuredBinResolved() string {
+	if v := c.StructuredBin(); v != "" {
+		return v
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(exe), "claude-structured")
+}
+
+// SDKAvailable reports whether the SDK session transport can spawn sessions:
+// the resolved wrapper path must exist, be a regular file, and be executable.
+// When false, session creation with transport=sdk is rejected and the UI
+// disables the option.
+func (c *Config) SDKAvailable() bool {
+	p := c.StructuredBinResolved()
+	if p == "" {
+		return false
+	}
+	fi, err := os.Stat(p)
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	return fi.Mode().Perm()&0o111 != 0
+}
 
 // CursorBin returns the configured cursor/agent binary (default "agent").
 func (c *Config) CursorBin() string { return c.get("cursor_bin", "agent") }

@@ -31,6 +31,9 @@ export interface SessionMeta {
   git_repo_url: string | null;
   tool: "claude" | "cursor" | "codex";
   codex_transport?: "tui" | "app_server";
+  /** How the server drives a claude session: tmux send-keys (default) or the
+   *  claude-structured SDK wrapper over json-in/json-out. */
+  transport?: "tmux" | "sdk";
 }
 
 export interface SessionListResponse {
@@ -250,6 +253,12 @@ export type FileViewerMode = "unlimited" | "lines" | "bytes";
 export interface ConfigView {
   workspace: string;
   claude_bin: string;
+  /** claude-structured wrapper path as configured ("" = default next to the server binary). */
+  structured_bin: string;
+  /** The wrapper path actually used (configured value, or the default). */
+  structured_bin_resolved: string;
+  /** Whether the resolved wrapper exists and is executable → SDK transport available. */
+  sdk_available: boolean;
   cursor_bin: string;
   proxy: string;
   proxy_mode: ProxyMode;
@@ -298,6 +307,13 @@ export function setClaudeBin(claude_bin: string): Promise<ConfigView> {
   return request("/api/config/claude-bin", {
     method: "PUT",
     body: JSON.stringify({ claude_bin }),
+  });
+}
+
+export function setStructuredBin(structured_bin: string): Promise<ConfigView> {
+  return request("/api/config/structured-bin", {
+    method: "PUT",
+    body: JSON.stringify({ structured_bin }),
   });
 }
 
@@ -364,7 +380,7 @@ export function setClaudeModels(models: string[]): Promise<ConfigView> {
   });
 }
 
-export function getAvailableTools(): Promise<{ claude: boolean; cursor: boolean }> {
+export function getAvailableTools(): Promise<{ claude: boolean; cursor: boolean; claude_sdk?: boolean }> {
   return request("/api/config/available-tools");
 }
 
@@ -517,6 +533,7 @@ export function createSession(body: {
   git_repo_url?: string;
   tool?: "claude" | "cursor" | "codex";
   codex_transport?: "tui" | "app_server";
+  transport?: "tmux" | "sdk";
 }): Promise<SessionMeta> {
   return request("/api/sessions", {
     method: "POST",

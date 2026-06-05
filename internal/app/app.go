@@ -20,6 +20,7 @@ import (
 	"github.com/loki/goclaudemanager/internal/git"
 	"github.com/loki/goclaudemanager/internal/jsonl"
 	"github.com/loki/goclaudemanager/internal/model"
+	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/status"
 	"github.com/loki/goclaudemanager/internal/store"
 	"github.com/loki/goclaudemanager/internal/term"
@@ -39,6 +40,7 @@ type App struct {
 	JSONL    *jsonl.Cache
 	Snapshot *status.Manager
 	Term     *term.Service
+	SDK      *sdktransport.Manager
 }
 
 // New opens the store and assembles the application.
@@ -93,7 +95,9 @@ func New() (*App, error) {
 		JSONL: jsonlCache,
 		Term:  termSvc,
 	}
+	a.SDK = sdktransport.New(st, env.DataDir)
 	a.Snapshot = status.NewManager(st, tmuxClient, jsonlCache)
+	a.Snapshot.SDK = a.SDK
 	return a, nil
 }
 
@@ -148,8 +152,9 @@ func (a *App) Handler() http.Handler {
 		JSONL:    a.JSONL,
 		Snapshot: a.Snapshot,
 		Term:     a.Term,
+		SDK:      a.SDK,
 	}))
-	r.Mount("/ws", ws.Router(ws.Deps{Store: a.Store, Tmux: a.Tmux, Auth: a.Auth, Env: a.Env, Term: a.Term}))
+	r.Mount("/ws", ws.Router(ws.Deps{Store: a.Store, Tmux: a.Tmux, Auth: a.Auth, Env: a.Env, Term: a.Term, SDK: a.SDK}))
 
 	// Catch-all: serve the SPA. Must be mounted last. Wrap in gzip so the large
 	// Vite bundle (the main index-*.js is ~2.5MB → ~760KB gzipped) and CSS ship

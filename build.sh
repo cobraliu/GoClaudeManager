@@ -53,6 +53,10 @@ go build -o bin/proxy ./cmd/proxy
 echo "==> [3/3] Building web server (bin/gocm)…"
 go build -o bin/gocm ./cmd/server
 
+# Optional: the claude-structured wrapper for the SDK session transport.
+# Skips silently when ../rewriteCodeCli or bun is missing.
+bash scripts/build-structured.sh
+
 echo "==> Done: frontend/dist, bin/proxy, bin/gocm"
 
 if [[ "$DO_RESTART" == 1 ]]; then

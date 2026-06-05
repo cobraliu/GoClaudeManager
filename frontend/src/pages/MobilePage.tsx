@@ -105,6 +105,7 @@ import {
   listShares,
   deleteShare,
   getAllRawMessages,
+  getAvailableTools,
   type RawMessage,
   type ShareRecord,
   type ShareTheme,
@@ -263,6 +264,11 @@ function CreateModal({
   const initialTool: "claude" | "codex" = (toolOptions[0] as "claude" | "codex" | undefined) ?? "claude";
   const [tool, setTool] = useState<"claude" | "codex">(initialTool);
   const [codexTransport, setCodexTransport] = useState<"tui" | "app_server">("tui");
+  const [claudeTransport, setClaudeTransport] = useState<"tmux" | "sdk">("tmux");
+  const [sdkAvailable, setSdkAvailable] = useState(false);
+  useEffect(() => {
+    getAvailableTools().then((t) => setSdkAvailable(!!t.claude_sdk)).catch(() => setSdkAvailable(false));
+  }, []);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const prefix = `${workspaceBase}/${username}/`;
@@ -277,6 +283,7 @@ function CreateModal({
         cwd,
         tool,
         ...(tool === "codex" ? { codex_transport: codexTransport } : {}),
+        ...(tool === "claude" && claudeTransport === "sdk" ? { transport: "sdk" as const } : {}),
       };
       onCreate(await createSession(params));
     } catch (e) { setErr(String(e)); } finally { setLoading(false); }
@@ -325,6 +332,32 @@ function CreateModal({
               {codexTransport === "tui"
                 ? "Interactive terminal — full chat + paste support."
                 : "Programmatic JSON-RPC — chat in app, live AUQ/approval."}
+            </div>
+          </div>
+        )}
+        {tool === "claude" && (
+          <div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>Transport</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {(["tmux", "sdk"] as const).map(k => {
+                const disabled = k === "sdk" && !sdkAvailable;
+                return (
+                  <button
+                    key={k}
+                    onClick={() => !disabled && setClaudeTransport(k)}
+                    disabled={disabled}
+                    style={{ ...pillBtn(claudeTransport === k), ...(disabled ? { opacity: 0.5, cursor: "not-allowed" } : {}), textTransform: "none" as const }}
+                  >
+                    {k === "tmux" ? "tmux (默认)" : "SDK"}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 4 }}>
+              {claudeTransport === "tmux"
+                ? "tmux send-keys 屏幕驱动（默认）。"
+                : "claude-structured NDJSON 协议 — 自动放行工具权限，AUQ/计划仍在 Chat 确认。"}
+              {!sdkAvailable && "（SDK 不可用：未找到 claude-structured binary）"}
             </div>
           </div>
         )}

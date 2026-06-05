@@ -49,6 +49,10 @@ func registerTopLevelRoutes(r chi.Router, d Deps) {
 			writeJSON(w, http.StatusOK, map[string]bool{
 				"claude": binInstalled(d.Cfg.ClaudeBin()),
 				"cursor": binInstalled(d.Cfg.CursorBin()),
+				// SDK transport for claude sessions: requires the
+				// claude-structured wrapper binary on disk (admin-configurable
+				// path; default = next to the server binary).
+				"claude_sdk": d.Cfg.SDKAvailable(),
 			})
 		})
 		rr.Get("/config/fonts", func(w http.ResponseWriter, _ *http.Request) {
@@ -61,6 +65,7 @@ func registerTopLevelRoutes(r chi.Router, d Deps) {
 		rr.Put("/config/proxy", func(w http.ResponseWriter, r *http.Request) { updateProxy(d, w, r) })
 		rr.Put("/config/workspace", func(w http.ResponseWriter, r *http.Request) { updateWorkspace(d, w, r) })
 		rr.Put("/config/claude-bin", func(w http.ResponseWriter, r *http.Request) { updateClaudeBin(d, w, r) })
+		rr.Put("/config/structured-bin", func(w http.ResponseWriter, r *http.Request) { updateStructuredBin(d, w, r) })
 		rr.Put("/config/cursor-bin", func(w http.ResponseWriter, r *http.Request) { updateCursorBin(d, w, r) })
 		rr.Put("/config/enabled-tools", func(w http.ResponseWriter, r *http.Request) { updateEnabledTools(d, w, r) })
 		rr.Put("/config/claude-models", func(w http.ResponseWriter, r *http.Request) { updateClaudeModels(d, w, r) })
@@ -96,6 +101,9 @@ func registerTopLevelRoutes(r chi.Router, d Deps) {
 type configView struct {
 	Workspace               string   `json:"workspace"`
 	ClaudeBin               string   `json:"claude_bin"`
+	StructuredBin           string   `json:"structured_bin"`          // raw configured value ("" = default)
+	StructuredBinResolved   string   `json:"structured_bin_resolved"` // path actually used
+	SDKAvailable            bool     `json:"sdk_available"`           // wrapper exists + executable
 	CursorBin               string   `json:"cursor_bin"`
 	Proxy                   string   `json:"proxy"`
 	ProxyMode               string   `json:"proxy_mode"`
@@ -115,6 +123,9 @@ func fullConfig(c *config.Config) configView {
 	return configView{
 		Workspace:               c.DefaultWorkspace(),
 		ClaudeBin:               c.ClaudeBin(),
+		StructuredBin:           c.StructuredBin(),
+		StructuredBinResolved:   c.StructuredBinResolved(),
+		SDKAvailable:            c.SDKAvailable(),
 		CursorBin:               c.CursorBin(),
 		Proxy:                   c.Proxy(),
 		ProxyMode:               c.ProxyMode(),
@@ -187,6 +198,25 @@ func updateClaudeBin(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := d.Cfg.SetClaudeBin(strings.TrimSpace(body.ClaudeBin)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, fullConfig(d.Cfg))
+}
+
+// updateStructuredBin saves the claude-structured wrapper path. An empty value
+// reverts to the default (next to the server binary). A missing/non-executable
+// file is still saved — it just makes the SDK transport unavailable, which the
+// response's sdk_available reflects (the requirement: missing file ⇒ mode
+// unavailable, not a config error).
+func updateStructuredBin(d Deps, w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		StructuredBin string `json:"structured_bin"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if err := d.Cfg.SetStructuredBin(strings.TrimSpace(body.StructuredBin)); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

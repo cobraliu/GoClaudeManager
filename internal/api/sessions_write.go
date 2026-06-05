@@ -41,6 +41,7 @@ type createSessionReq struct {
 	GitRepoURL      *string           `json:"git_repo_url"`
 	Tool            string            `json:"tool"`
 	CodexTransport  string            `json:"codex_transport"`
+	Transport       string            `json:"transport"`
 }
 
 func createSession(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -89,6 +90,18 @@ func createSession(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SDK transport is claude-only and requires the claude-structured binary
+	// to actually exist — never create a session that can't spawn.
+	transport := "tmux"
+	if body.Tool == "claude" && body.Transport == "sdk" {
+		if !d.Cfg.SDKAvailable() {
+			writeErr(w, http.StatusConflict,
+				"sdk transport unavailable: claude-structured binary not found at "+d.Cfg.StructuredBinResolved())
+			return
+		}
+		transport = "sdk"
+	}
+
 	now := model.NowUTC()
 	s := &model.Session{
 		ID:              uuidV4(),
@@ -105,6 +118,7 @@ func createSession(d Deps, w http.ResponseWriter, r *http.Request) {
 		TmuxSessionName: tmuxName,
 		ResumeSessionID: body.ResumeSessionID,
 		CodexTransport:  codexTransport,
+		Transport:       transport,
 	}
 	if body.GitRepoURL != nil && *body.GitRepoURL != "" && !cwdExists {
 		s.GitRepoURL = body.GitRepoURL
@@ -126,6 +140,29 @@ func createSession(d Deps, w http.ResponseWriter, r *http.Request) {
 	model_ := ""
 	if body.Model != nil {
 		model_ = *body.Model
+	}
+	if transport == "sdk" {
+		// SDK transport: fresh channels (truncated json-out), spawn the
+		// claude-structured wrapper in the tmux pane, start the event pump.
+		// agent_session_id arrives via the pump's session_start event — no
+		// inner-id pid file, no JSONL scanning goroutine.
+		jsonIn, jsonOut, err := d.SDK.ResetChannels(s.ID)
+		if err != nil {
+			_, _ = d.Store.Transition(s.ID, model.StatusTerminated)
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := d.Tmux.CreateSDKSession(tmuxName, cwd, body.Env,
+			d.Cfg.StructuredBinResolved(), model_, resume, jsonIn, jsonOut); err != nil {
+			_, _ = d.Store.Transition(s.ID, model.StatusTerminated)
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		_, _ = d.Store.Transition(s.ID, model.StatusRunning)
+		d.SDK.Start(s.ID)
+		out, _ := d.Store.GetSession(s.ID)
+		writeJSONStatus(w, http.StatusCreated, out)
+		return
 	}
 	if err := d.Tmux.CreateSession(tmuxName, cwd, body.Env, model_, resume, innerID, body.Tool); err != nil {
 		_, _ = d.Store.Transition(s.ID, model.StatusTerminated)
@@ -216,8 +253,14 @@ func terminateSession(d Deps, w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// SDK transport: stop the event pump first (the wrapper itself dies with
+	// the pane; the runtime dir is left on disk for a later resume).
+	if s.Transport == "sdk" {
+		d.SDK.Stop(s.ID)
+	}
 	// Best-effort resolve of agent session id before killing (so history is linkable).
-	if (s.AgentSessionID == nil || *s.AgentSessionID == "") && d.Tmux.HasSession(s.TmuxSessionName) {
+	if s.Transport != "sdk" &&
+		(s.AgentSessionID == nil || *s.AgentSessionID == "") && d.Tmux.HasSession(s.TmuxSessionName) {
 		if asid, pid, ok := d.Tmux.ResolveAgentSessionID(s.TmuxSessionName, s.Cwd, 2*time.Second); ok {
 			if pid > 0 {
 				p := pid
@@ -259,6 +302,33 @@ func resumeSession(d Deps, w http.ResponseWriter, r *http.Request) {
 	model_ := ""
 	if s.Model != nil {
 		model_ = *s.Model
+	}
+	if s.Transport == "sdk" {
+		// Same availability gate as create: never spawn a broken session.
+		if !d.Cfg.SDKAvailable() {
+			writeErr(w, http.StatusConflict,
+				"sdk transport unavailable: claude-structured binary not found at "+d.Cfg.StructuredBinResolved())
+			return
+		}
+		jsonIn, jsonOut, err := d.SDK.ResetChannels(s.ID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := d.Tmux.CreateSDKSession(tmuxName, s.Cwd, s.Env,
+			d.Cfg.StructuredBinResolved(), model_, resume, jsonIn, jsonOut); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		_ = d.Store.UpdateTmuxSessionName(s.ID, tmuxName)
+		_, _ = d.Store.Transition(s.ID, model.StatusRunning)
+		_ = d.Store.ResetAttachedClients(s.ID)
+		// session_start from the new wrapper re-pins agent_session_id (the SDK
+		// forks --resume to a fresh id, and the pump's view is authoritative).
+		d.SDK.Start(s.ID)
+		out, _ := d.Store.GetSession(s.ID)
+		writeJSON(w, http.StatusOK, out)
+		return
 	}
 	if err := d.Tmux.CreateSession(tmuxName, s.Cwd, s.Env, model_, resume, "", s.Tool); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -315,7 +385,11 @@ func setSessionModel(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if (s.Status == model.StatusRunning || s.Status == model.StatusDetached) && body.Model != nil && *body.Model != "" {
-		_ = d.Tmux.SendKeys(s.TmuxSessionName, "/model "+*body.Model)
+		if s.Transport == "sdk" {
+			_ = d.SDK.Control(s.ID, "set_model", map[string]any{"model": *body.Model})
+		} else {
+			_ = d.Tmux.SendKeys(s.TmuxSessionName, "/model "+*body.Model)
+		}
 	}
 	_ = d.Store.UpdateModel(s.ID, body.Model)
 	out, _ := d.Store.GetSession(s.ID)

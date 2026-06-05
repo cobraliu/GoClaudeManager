@@ -12,6 +12,7 @@ import (
 
 	"github.com/loki/goclaudemanager/internal/auth"
 	"github.com/loki/goclaudemanager/internal/config"
+	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/store"
 	"github.com/loki/goclaudemanager/internal/term"
 	"github.com/loki/goclaudemanager/internal/tmux"
@@ -24,6 +25,7 @@ type Deps struct {
 	Auth  *auth.Auth
 	Env   config.Env
 	Term  *term.Service
+	SDK   *sdktransport.Manager
 }
 
 // Router builds the /ws sub-router.

@@ -19,6 +19,7 @@ import (
 	"github.com/loki/goclaudemanager/internal/claudestat"
 	"github.com/loki/goclaudemanager/internal/jsonl"
 	"github.com/loki/goclaudemanager/internal/model"
+	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/tmux"
 )
 
@@ -41,6 +42,10 @@ type Manager struct {
 	store sessionLister
 	tmux  *tmux.Client
 	jsonl *jsonl.Cache
+
+	// SDK exposes the sdk-transport pump state; sessions with transport=="sdk"
+	// are computed from it instead of pane captures. Set after construction.
+	SDK *sdktransport.Manager
 
 	mu   sync.RWMutex
 	snap map[string]Computed
@@ -107,6 +112,12 @@ func (m *Manager) Compute(s *model.Session) Computed {
 	// Codex app-server transport is handled by the codex manager (Phase 3).
 	if s.Tool == "codex" && s.CodexTransport == "app_server" {
 		return Computed{}
+	}
+
+	// SDK transport: everything comes from the wrapper's json-out pump — no
+	// pane captures, PID files or hook scans (those target the TUI flow).
+	if s.Transport == "sdk" {
+		return m.computeSDK(s)
 	}
 
 	eligible := s.Status == model.StatusRunning || s.Status == model.StatusDetached
@@ -225,4 +236,30 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		TuiPlanPending:     planPending,
 		TuiPlanData:        planData,
 	}
+}
+
+// computeSDK builds Computed for an sdk-transport session from the pump state.
+func (m *Manager) computeSDK(s *model.Session) Computed {
+	if m.SDK == nil {
+		return Computed{}
+	}
+	st, ok := m.SDK.State(s.ID)
+	if !ok {
+		return Computed{}
+	}
+	var c Computed
+	if st.PendingAUQ != nil {
+		c.TuiAuqData = st.PendingAUQ.Data
+		h := "Claude is asking a question — answer in Chat or switch to TUI"
+		c.TuiHint = &h
+	}
+	if st.PendingPlan != nil {
+		c.TuiPlanPending = true
+		c.TuiPlanData = st.PendingPlan.Data
+		if c.TuiHint == nil {
+			h := "Claude proposed a plan — review in Chat or switch to TUI"
+			c.TuiHint = &h
+		}
+	}
+	return c
 }

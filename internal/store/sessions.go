@@ -27,7 +27,8 @@ const sessionCols = `id, owner_id, name, project, cwd, env, model, status,
 	created_at, updated_at, attached_clients, last_output_offset, last_activity_at,
 	ws_token, tmux_session_name, resume_session_id, agent_session_id,
 	claude_proc_pid, git_auto_commit, git_commit_msg_count, git_repo_url,
-	last_turn_at, tool, codex_transport, codex_appserver_pid, codex_appserver_port`
+	last_turn_at, tool, codex_transport, codex_appserver_pid, codex_appserver_port,
+	transport`
 
 // orderBySQL mirrors the status-priority ordering used by list_for_owner/all.
 const orderBySQL = `ORDER BY CASE status
@@ -57,6 +58,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*model.Session, error) {
 		codexTransp  sql.NullString
 		codexPID     sql.NullInt64
 		codexPort    sql.NullInt64
+		transport    sql.NullString
 	)
 	if err := sc.Scan(
 		&s.ID, &s.OwnerID, &s.Name, &s.Project, &s.Cwd, &envJSON, &modelV, &s.Status,
@@ -64,6 +66,7 @@ func scanSession(sc interface{ Scan(...any) error }) (*model.Session, error) {
 		&wsToken, &s.TmuxSessionName, &resumeID, &agentID,
 		&claudePID, &gitAuto, &gitMsgCount, &gitRepoURL,
 		&lastTurnAt, &tool, &codexTransp, &codexPID, &codexPort,
+		&transport,
 	); err != nil {
 		return nil, err
 	}
@@ -98,6 +101,10 @@ func scanSession(sc interface{ Scan(...any) error }) (*model.Session, error) {
 	}
 	s.CodexAppserverPID = niToIntPtr(codexPID)
 	s.CodexAppserverPort = niToIntPtr(codexPort)
+	s.Transport = "tmux"
+	if transport.Valid && transport.String != "" {
+		s.Transport = transport.String
+	}
 	return &s, nil
 }
 
@@ -114,13 +121,13 @@ func (s *Store) CreateSession(m *model.Session) error {
 		    created_at, updated_at, attached_clients, last_output_offset,
 		    last_activity_at, ws_token, tmux_session_name, resume_session_id,
 		    agent_session_id, git_repo_url, tool, codex_transport,
-		    codex_appserver_pid, codex_appserver_port)
-		   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		    codex_appserver_pid, codex_appserver_port, transport)
+		   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		m.ID, m.OwnerID, m.Name, m.Project, m.Cwd, string(envJSON), m.Model, m.Status,
 		m.CreatedAt.String(), m.UpdatedAt.String(), m.AttachedClients, m.LastOutputOffset,
 		isoPtr(m.LastActivityAt), m.WsToken, m.TmuxSessionName, m.ResumeSessionID,
 		m.AgentSessionID, m.GitRepoURL, m.Tool, m.CodexTransport,
-		m.CodexAppserverPID, m.CodexAppserverPort,
+		m.CodexAppserverPID, m.CodexAppserverPort, m.Transport,
 	)
 	return err
 }

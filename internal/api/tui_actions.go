@@ -61,6 +61,10 @@ func answerAUQ(d Deps, w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
+	if s.Transport == "sdk" {
+		sdkAnswerAUQ(d, w, s, body)
+		return
+	}
 
 	pane := s.TmuxSessionName + ":0.0"
 
@@ -159,6 +163,10 @@ func auqSubmit(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	var body auqSubmitBody
 	if !readJSON(w, r, &body) {
+		return
+	}
+	if s.Transport == "sdk" {
+		sdkAuqSubmit(d, w, s, body)
 		return
 	}
 
@@ -301,6 +309,12 @@ func toolApprove(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	var body toolApproveBody
 	if !readJSON(w, r, &body) {
+		return
+	}
+	if s.Transport == "sdk" {
+		// sdk sessions run with auto-allow: ordinary tool permissions never
+		// block, so there is nothing to approve — succeed as a no-op.
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "via": "sdk-auto-allow"})
 		return
 	}
 
@@ -479,6 +493,10 @@ func planApprove(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "provide a 'label'/'index' option, or decision 'approve'|'reject'")
 		return
 	}
+	if s.Transport == "sdk" {
+		sdkPlanApprove(d, w, s, body)
+		return
+	}
 
 	pane := s.TmuxSessionName + ":0.0"
 	screen := d.Tmux.CaptureVisibleScreen(s.TmuxSessionName)
@@ -534,6 +552,12 @@ func rewindSession(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	var body rewindBody
 	if !readJSON(w, r, &body) {
+		return
+	}
+	if s.Transport == "sdk" {
+		// Rewind restarts the tmux command with `claude --resume` after truncating
+		// the JSONL; the sdk wrapper has no equivalent restart path yet (v1).
+		writeErr(w, http.StatusNotImplemented, "rewind is not supported for sdk-transport sessions yet")
 		return
 	}
 	if s.AgentSessionID == nil || *s.AgentSessionID == "" {

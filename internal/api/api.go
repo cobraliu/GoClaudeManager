@@ -18,6 +18,7 @@ import (
 	"github.com/loki/goclaudemanager/internal/config"
 	"github.com/loki/goclaudemanager/internal/git"
 	"github.com/loki/goclaudemanager/internal/jsonl"
+	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/status"
 	"github.com/loki/goclaudemanager/internal/store"
 	"github.com/loki/goclaudemanager/internal/term"
@@ -35,6 +36,7 @@ type Deps struct {
 	JSONL    *jsonl.Cache
 	Snapshot *status.Manager
 	Term     *term.Service
+	SDK      *sdktransport.Manager
 }
 
 // Router builds the /api sub-router.

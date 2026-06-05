@@ -47,6 +47,10 @@ type Session struct {
 	CodexTransport   string            `json:"codex_transport"`
 	CodexAppserverPID  *int            `json:"codex_appserver_pid"`
 	CodexAppserverPort *int            `json:"codex_appserver_port"`
+	// Transport selects how the server drives a claude session: "tmux"
+	// (send-keys/capture-pane screen-scraping, the default) or "sdk" (the
+	// claude-structured wrapper driven over json-in/json-out NDJSON).
+	Transport        string            `json:"transport"`
 	GitAutoCommit    bool              `json:"git_auto_commit"`
 	GitCommitMsgCount int              `json:"git_commit_msg_count"`
 	GitRepoURL       *string           `json:"git_repo_url"`

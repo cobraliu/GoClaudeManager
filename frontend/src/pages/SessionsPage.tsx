@@ -715,7 +715,7 @@ function NewSessionModal({
   workspaceBase: string;
   loading: boolean;
   enabledTools: string[];
-  onSubmit: (p: { project: string; cwd?: string; git_repo_url?: string; tool: "claude" | "cursor" | "codex"; codex_transport?: "tui" | "app_server" }) => void;
+  onSubmit: (p: { project: string; cwd?: string; git_repo_url?: string; tool: "claude" | "cursor" | "codex"; codex_transport?: "tui" | "app_server"; transport?: "tmux" | "sdk" }) => void;
   onClose: () => void;
 }) {
   // Always read username from the current JWT to stay in sync with actual token
@@ -729,6 +729,15 @@ function NewSessionModal({
   const initialTool: "claude" | "cursor" | "codex" = (allTools[0] as "claude" | "cursor" | "codex" | undefined) ?? "claude";
   const [tool, setTool] = useState<"claude" | "cursor" | "codex">(initialTool);
   const [codexTransport, setCodexTransport] = useState<"tui" | "app_server">("tui");
+  // Claude transport: tmux send-keys (default) vs SDK wrapper. The SDK option
+  // is gated on the claude-structured binary existing server-side.
+  const [claudeTransport, setClaudeTransport] = useState<"tmux" | "sdk">("tmux");
+  const [sdkAvailable, setSdkAvailable] = useState(false);
+  useEffect(() => {
+    getAvailableTools()
+      .then((t) => setSdkAvailable(!!t.claude_sdk))
+      .catch(() => setSdkAvailable(false));
+  }, []);
 
   // suffix is the editable part after the fixed prefix
   const [suffix, setSuffix] = useState("");
@@ -867,6 +876,46 @@ function NewSessionModal({
             </div>
           </div>
         )}
+        {tool === "claude" && (
+          <div>
+            <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>
+              Transport
+            </label>
+            <div style={{ display: "flex", gap: 6 }}>
+              {(["tmux", "sdk"] as const).map((k) => {
+                const disabled = k === "sdk" && !sdkAvailable;
+                return (
+                  <button
+                    key={k}
+                    onClick={() => !disabled && setClaudeTransport(k)}
+                    disabled={disabled}
+                    title={disabled ? "claude-structured binary 不可用 — 请在 Admin 配置 SDK Transport Binary 路径" : undefined}
+                    style={{
+                      flex: 1,
+                      padding: "5px 8px",
+                      fontSize: 12,
+                      borderRadius: 5,
+                      border: "1px solid " + (claudeTransport === k ? "var(--accent-blue)" : "var(--border)"),
+                      background: claudeTransport === k ? "rgba(88,166,255,0.15)" : "var(--bg-main)",
+                      color: disabled ? "var(--text-faint)" : claudeTransport === k ? "var(--text-body)" : "var(--text-secondary)",
+                      fontWeight: claudeTransport === k ? 600 : 400,
+                      cursor: disabled ? "not-allowed" : "pointer",
+                      opacity: disabled ? 0.55 : 1,
+                    }}
+                  >
+                    {k === "tmux" ? "tmux (默认)" : "SDK"}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 4 }}>
+              {claudeTransport === "tmux"
+                ? "Screen-scraping via tmux send-keys — the battle-tested default."
+                : "Typed NDJSON protocol via the claude-structured wrapper — auto-allows tool permissions; AUQ/plan review still surface in Chat."}
+              {!sdkAvailable && " （SDK 不可用：未找到 claude-structured binary）"}
+            </div>
+          </div>
+        )}
         <div>
           <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>
             Working Directory
@@ -990,6 +1039,7 @@ function NewSessionModal({
                 git_repo_url: gitRepoUrl.trim() || undefined,
                 tool,
                 ...(tool === "codex" ? { codex_transport: codexTransport } : {}),
+                ...(tool === "claude" && claudeTransport === "sdk" ? { transport: "sdk" as const } : {}),
               };
               if (archiveFile && suffix.trim()) {
                 setExtracting(true);
@@ -1999,6 +2049,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
     git_repo_url?: string;
     tool: "claude" | "cursor" | "codex";
     codex_transport?: "tui" | "app_server";
+    transport?: "tmux" | "sdk";
   }) => {
     setLoading(true);
     try {

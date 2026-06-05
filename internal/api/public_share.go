@@ -542,17 +542,30 @@ func sharePrompt(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "offline")
 		return
 	}
-	// AUQ guard is claude-specific (PID file). For other tools claude_proc_pid
-	// is nil, so this is a cheap no-op.
-	if sharePidWaitingForAUQ(session.ClaudeProcPID) {
+	// AUQ guard: sdk sessions consult the pump state; tmux sessions use the
+	// claude-specific PID file (nil for other tools, so a cheap no-op).
+	if session.Transport == "sdk" {
+		if st, ok := d.SDK.State(session.ID); ok && st.PendingAUQ != nil {
+			writeErr(w, http.StatusConflict, "auq_pending")
+			return
+		}
+	} else if sharePidWaitingForAUQ(session.ClaudeProcPID) {
 		writeErr(w, http.StatusConflict, "auq_pending")
 		return
 	}
 
-	paneTarget := session.TmuxSessionName + ":0.0"
 	if _, err := d.Store.AppendPromptHistory(session.ID, body.Text, nowUnix(), strPtr("0")); err != nil {
 		slog.Warn("share prompt: append_prompt_history failed", "session", session.ID, "err", err)
 	}
+	if session.Transport == "sdk" {
+		if err := d.SDK.Send(session.ID, body.Text); err != nil {
+			writeErr(w, http.StatusInternalServerError, "send failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	paneTarget := session.TmuxSessionName + ":0.0"
 	if err := d.Tmux.DeliverToPane(paneTarget, body.Text, true); err != nil {
 		writeErr(w, http.StatusInternalServerError, "send failed: "+err.Error())
 		return

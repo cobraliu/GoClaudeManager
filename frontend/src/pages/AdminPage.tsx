@@ -9,6 +9,7 @@ import {
   getConfig,
   setWorkspace,
   setClaudeBin,
+  setStructuredBin,
   setProxy,
   setFileViewer,
   setEnabledTools,
@@ -50,6 +51,10 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
   const [workspaceInput, setWorkspaceInput] = useState("");
   const [claudeBin, setClaudeBinVal] = useState("");
   const [claudeBinInput, setClaudeBinInput] = useState("");
+  const [structuredBin, setStructuredBinVal] = useState("");
+  const [structuredBinInput, setStructuredBinInput] = useState("");
+  const [structuredBinResolved, setStructuredBinResolved] = useState("");
+  const [sdkAvailable, setSdkAvailable] = useState(false);
   const [proxy, setProxyVal] = useState("");
   const [proxyInput, setProxyInput] = useState("");
   const [proxyMode, setProxyModeVal] = useState<ProxyMode>("tap_upstream");
@@ -95,6 +100,10 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
       setWorkspaceInput(c.workspace);
       setClaudeBinVal(c.claude_bin);
       setClaudeBinInput(c.claude_bin);
+      setStructuredBinVal(c.structured_bin);
+      setStructuredBinInput(c.structured_bin);
+      setStructuredBinResolved(c.structured_bin_resolved);
+      setSdkAvailable(c.sdk_available);
       setProxyVal(c.proxy);
       setProxyInput(c.proxy);
       setProxyModeVal(c.proxy_mode);
@@ -401,6 +410,54 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
                       const c = await setClaudeBin(claudeBinInput.trim());
                       setClaudeBinVal(c.claude_bin);
                       setMsg("Claude binary path updated. Restart the server to apply.");
+                    } catch (e) { setMsg(String(e)); }
+                  }}
+                  style={{ background: "#58a6ff", color: "#fff" }}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+
+            {/* claude-structured wrapper (SDK transport) */}
+            <div style={cardStyle}>
+              <h3 style={{ marginBottom: 4, fontSize: 15 }}>
+                SDK Transport Binary (claude-structured)
+                <span
+                  style={{
+                    marginLeft: 10, fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 10,
+                    background: sdkAvailable ? "#13240f" : "#241010",
+                    color: sdkAvailable ? "#86efac" : "#fca5a5",
+                    border: `1px solid ${sdkAvailable ? "#166534" : "#7f1d1d"}`,
+                  }}
+                >
+                  {sdkAvailable ? "可用" : "不可用"}
+                </span>
+              </h3>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+                <code style={{ color: "var(--text-secondary)" }}>claude-structured</code> wrapper 的路径，
+                供 SDK transport 会话使用。留空则使用默认（服务端二进制同目录）。
+                文件不存在或不可执行时，创建会话的 SDK 选项不可用。
+                <br />当前解析路径：<code style={{ color: "var(--text-secondary)" }}>{structuredBinResolved || "(unknown)"}</code>
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={structuredBinInput}
+                  onChange={(e) => setStructuredBinInput(e.target.value)}
+                  placeholder={structuredBinResolved || "默认：服务端二进制同目录/claude-structured"}
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <button
+                  disabled={structuredBinInput.trim() === structuredBin}
+                  onClick={async () => {
+                    try {
+                      const c = await setStructuredBin(structuredBinInput.trim());
+                      setStructuredBinVal(c.structured_bin);
+                      setStructuredBinResolved(c.structured_bin_resolved);
+                      setSdkAvailable(c.sdk_available);
+                      setMsg(c.sdk_available
+                        ? "SDK wrapper 路径已更新，立即生效。"
+                        : "已保存，但该路径下没有可执行的 claude-structured —— SDK transport 暂不可用。");
                     } catch (e) { setMsg(String(e)); }
                   }}
                   style={{ background: "#58a6ff", color: "#fff" }}

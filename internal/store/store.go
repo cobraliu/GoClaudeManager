@@ -119,6 +119,7 @@ var migrations = []string{
 	`ALTER TABLE sessions ADD COLUMN codex_transport TEXT NOT NULL DEFAULT 'tui'`,
 	`ALTER TABLE sessions ADD COLUMN codex_appserver_pid INTEGER`,
 	`ALTER TABLE sessions ADD COLUMN codex_appserver_port INTEGER`,
+	`ALTER TABLE sessions ADD COLUMN transport TEXT NOT NULL DEFAULT 'tmux'`,
 	`ALTER TABLE scheduled_tasks ADD COLUMN loop_seconds INTEGER`,
 	`ALTER TABLE shares ADD COLUMN default_theme TEXT NOT NULL DEFAULT 'light'`,
 	`ALTER TABLE shares ADD COLUMN file_access TEXT`,

@@ -271,9 +271,29 @@ func (s *termState) handleInput(ctx context.Context, msg clientMsg) {
 	data := *msg.Data
 
 	if msg.Pane != nil {
+		textPart := trimNewline(data)
+
+		// SDK transport: chat messages go over the json-in FIFO as full turns
+		// (the pane only hosts the wrapper's TUI; never send-keys into it).
+		if s.session.Transport == "sdk" {
+			if st, ok := s.d.SDK.State(s.sessionID); ok && st.PendingAUQ != nil {
+				_ = wsWriteJSON(ctx, s.c, map[string]any{"type": "prompt-rejected", "reason": "auq_pending", "text": textPart})
+				return
+			}
+			if textPart == "" {
+				return // a bare Enter is a TUI gesture, meaningless as a turn
+			}
+			_, _ = s.d.Store.AppendPromptHistory(s.sessionID, textPart, float64(time.Now().UnixNano())/1e9, msg.Pane)
+			if err := s.d.SDK.Send(s.sessionID, textPart); err != nil {
+				_ = wsWriteJSON(ctx, s.c, map[string]any{"type": "prompt-rejected", "reason": "send_failed", "text": textPart})
+			} else {
+				s.d.Store.ClearLostMessagesByText(s.sessionID, textPart)
+			}
+			return
+		}
+
 		// Direct-to-pane chat delivery.
 		paneTarget := s.session.TmuxSessionName + ":0." + *msg.Pane
-		textPart := trimNewline(data)
 		fresh, _ := s.d.Store.GetSession(s.sessionID)
 		if fresh != nil && pidWaitingForAUQ(fresh.ClaudeProcPID) {
 			_ = wsWriteJSON(ctx, s.c, map[string]any{"type": "prompt-rejected", "reason": "auq_pending", "text": textPart})
@@ -293,6 +313,15 @@ func (s *termState) handleInput(ctx context.Context, msg clientMsg) {
 				s.d.Store.ClearLostMessagesByText(s.sessionID, textPart)
 			}
 		}
+		return
+	}
+
+	// SDK transport: the chat "Stop" button sends a bare Ctrl+C over the raw
+	// path, but the wrapper's Ink TUI binds Ctrl+C to quit (App.tsx) — which
+	// would kill the whole session. Translate it to a protocol interrupt
+	// instead (the TUI's own interrupt key, Esc, still passes through).
+	if s.session.Transport == "sdk" && data == "\x03" {
+		_ = s.d.SDK.Control(s.sessionID, "interrupt", nil)
 		return
 	}
 

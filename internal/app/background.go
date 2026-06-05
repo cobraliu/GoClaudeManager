@@ -32,6 +32,13 @@ func (a *App) reconcileOnStartup() {
 			if !a.Tmux.HasSession(s.TmuxSessionName) {
 				_ = a.Store.ForceStatus(s.ID, model.StatusTerminated)
 				n++
+				continue
+			}
+			// Surviving sdk session: the wrapper kept running in its tmux pane
+			// across our restart — restart the json-out pump (replay from 0
+			// rebuilds streaming/pending state, FIFO writes resume seamlessly).
+			if s.Transport == "sdk" {
+				a.SDK.Start(s.ID)
 			}
 		}
 	}
@@ -70,7 +77,12 @@ func (a *App) fireDueTasks() {
 			_ = a.Store.UpdateTaskStatus(task.ID, "failed", strp("tmux session gone"))
 			continue
 		}
-		if err := a.Tmux.SendKeys(session.TmuxSessionName, task.Command); err != nil {
+		if session.Transport == "sdk" {
+			if err := a.SDK.Send(session.ID, task.Command); err != nil {
+				_ = a.Store.UpdateTaskStatus(task.ID, "failed", strp(err.Error()))
+				continue
+			}
+		} else if err := a.Tmux.SendKeys(session.TmuxSessionName, task.Command); err != nil {
 			_ = a.Store.UpdateTaskStatus(task.ID, "failed", strp(err.Error()))
 			continue
 		}

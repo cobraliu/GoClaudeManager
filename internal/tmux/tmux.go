@@ -274,6 +274,54 @@ func (c *Client) CreateSession(sessionName, cwd string, env map[string]string,
 	return nil
 }
 
+// CreateSDKSession creates a detached tmux session running the claude-structured
+// wrapper (SDK transport). The wrapper's Ink TUI lives in the pane (restart
+// survival + xterm attach work exactly like tmux-transport sessions) while the
+// Go server drives it over --json-in/--json-out NDJSON.
+//
+// Differences from CreateSession on purpose:
+//   - No Anthropic tap proxy: streaming preview comes from json-out partial
+//     events, so ANTHROPIC_BASE_URL is never injected — and explicitly unset
+//     (env -u) in case the tmux server's global env captured a stale tap URL.
+//     General outbound proxy vars (ProxyEnv) still apply via buildEnvPrefix.
+//   - No --claude-path / CLAUDE_CLI_PATH: the compiled wrapper resolves its
+//     sibling `claude` binary (installed next to it by build-structured.sh),
+//     which is version-matched with its embedded agent SDK.
+//   - No trust-dialog auto-accepter and no inner-id pid file: the SDK flow has
+//     no workspace-trust TUI dialog, and agent_session_id comes from the
+//     wrapper's session_start event instead of JSONL scanning.
+func (c *Client) CreateSDKSession(sessionName, cwd string, env map[string]string,
+	structuredBin, claudeModel, resumeSessionID, jsonIn, jsonOut string) error {
+
+	parts := []string{
+		shellQuote(structuredBin),
+		"--backend", "claude",
+		"--auto-allow",
+		"--cwd", shellQuote(cwd),
+		"--json-in", shellQuote(jsonIn),
+		"--json-out", shellQuote(jsonOut),
+	}
+	if claudeModel != "" {
+		parts = append(parts, "--model", shellQuote(claudeModel))
+	}
+	if resumeSessionID != "" {
+		parts = append(parts, "--resume", shellQuote(resumeSessionID))
+	}
+	// Nested env: the outer `env -u` strips any stale tap URL leaked from the
+	// tmux server env; the inner prefix (from buildEnvPrefix) re-sets whatever
+	// the caller asked for, so an explicit user-provided value still wins.
+	command := "env -u ANTHROPIC_BASE_URL " + c.buildEnvPrefix(env) + strings.Join(parts, " ")
+
+	if _, err := c.run("new-session", "-d", "-s", sessionName, "-c", cwd, command); err != nil {
+		return err
+	}
+	// Best-effort session options, same set as CreateSession.
+	_, _ = c.run("set-option", "-t", sessionName, "mouse", "off")
+	_, _ = c.run("set-option", "-t", sessionName, "history-limit", "50000")
+	_, _ = c.run("set-option", "-t", sessionName, "mode-keys", "vi")
+	return nil
+}
+
 // buildCommand returns the full shell command string to spawn the agent,
 // dispatching on tool. This ports app/agents/{claude,cursor,codex}.build_command.
 // The `env` parameter is accepted for parity but, as in Python, the env is
