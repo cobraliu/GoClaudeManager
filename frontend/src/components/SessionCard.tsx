@@ -12,6 +12,39 @@ function _relTime(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+// Clear "last prompt" timestamp: a chip whose colour encodes recency so it
+// stands out from the prompt text — recent activity is brightest/green and it
+// fades as it ages. Full date/time on hover.
+function LastPromptTime({ iso }: { iso: string }) {
+  const ageSec = (Date.now() - new Date(iso).getTime()) / 1000;
+  // Recency tiers → colour + emphasis. All theme-aware CSS vars.
+  let color = "var(--text-muted)";
+  let weight = 500;
+  if (ageSec < 300) { color = "var(--accent-green)"; weight = 600; }        // <5min: live
+  else if (ageSec < 3600) { color = "var(--accent-blue)"; }                 // <1h: recent
+  else if (ageSec < 86400) { color = "var(--text-secondary)"; }             // <1d
+  return (
+    <span
+      title={`Last prompt: ${new Date(iso).toLocaleString()}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        fontSize: 10,
+        fontWeight: weight,
+        color,
+        background: "var(--bg-hover)",
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+        padding: "1px 6px",
+        whiteSpace: "nowrap",
+        flexShrink: 0,
+      }}
+    >
+      {_relTime(iso)}
+    </span>
+  );
+}
+
 const STATUS_COLORS: Record<string, string> = {
   creating: "#f0ad4e",
   running: "#5cb85c",
@@ -483,11 +516,11 @@ export function SessionCard({
               <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={s.prompts[s.prompts.length - 1]}>
                 <span style={{ color: "var(--text-faintest)", fontFamily: "monospace" }}>#-1</span>{" "}<PromptText text={s.prompts[s.prompts.length - 1]} />
               </div>
-              {s.last_user_input_at && <span style={{ fontSize: 10, color: "var(--text-faintest)", flexShrink: 0 }}>{_relTime(s.last_user_input_at)}</span>}
+              {s.last_user_input_at && <LastPromptTime iso={s.last_user_input_at} />}
             </div>
           )}
           {s.prompts.length < 2 && s.last_user_input_at && (
-            <div style={{ fontSize: 10, color: "var(--text-faintest)" }}>{_relTime(s.last_user_input_at)}</div>
+            <div style={{ marginTop: 2 }}><LastPromptTime iso={s.last_user_input_at} /></div>
           )}
         </div>
       )}
