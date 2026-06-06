@@ -512,15 +512,15 @@ export function SessionCard({
             <span style={{ color: "var(--text-faintest)", fontFamily: "monospace" }}>#0</span>{" "}<PromptText text={s.prompts[0]} />
           </div>
           {s.prompts.length >= 2 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }} title={s.prompts[s.prompts.length - 1]}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap" }}>
+              <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }} title={s.prompts[s.prompts.length - 1]}>
                 <span style={{ color: "var(--text-faintest)", fontFamily: "monospace" }}>#-1</span>{" "}<PromptText text={s.prompts[s.prompts.length - 1]} />
               </div>
               {s.last_user_input_at && <LastPromptTime iso={s.last_user_input_at} />}
             </div>
           )}
           {s.prompts.length < 2 && s.last_user_input_at && (
-            <div style={{ marginTop: 2 }}><LastPromptTime iso={s.last_user_input_at} /></div>
+            <div style={{ marginTop: 2, display: "flex", justifyContent: "flex-end" }}><LastPromptTime iso={s.last_user_input_at} /></div>
           )}
         </div>
       )}
