@@ -20,6 +20,7 @@ import {
   readFile,
   writeFile,
   fetchRawFileBlob,
+  mediaFileUrl,
   downloadFile,
   getDirInfo,
   downloadDirZip,
@@ -57,9 +58,11 @@ interface NodeState {
 }
 
 
-type FileKind = "edit" | "code" | "csv" | "jsonl" | "markdown" | "sqlite" | "pdf" | "image";
+type FileKind = "edit" | "code" | "csv" | "jsonl" | "markdown" | "sqlite" | "pdf" | "image" | "audio" | "video";
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "tiff", "tif", "ico", "svg", "heic", "heif"]);
+const VIDEO_EXTS = new Set(["mp4", "webm", "ogv", "mov", "m4v", "mkv"]);
+const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "oga", "m4a", "aac", "flac", "opus"]);
 
 function getExt(path: string): string {
   return path.split(".").pop()?.toLowerCase() || "";
@@ -85,6 +88,8 @@ function getFileKind(path: string, isSqlite: boolean): FileKind {
   const ext = getExt(path);
   if (ext === "pdf") return "pdf";
   if (IMAGE_EXTS.has(ext)) return "image";
+  if (VIDEO_EXTS.has(ext)) return "video";
+  if (AUDIO_EXTS.has(ext)) return "audio";
   if (ext === "csv" || ext === "tsv") return "csv";
   if (ext === "jsonl") return "jsonl";
   if (ext === "md" || ext === "markdown") return "markdown";
@@ -258,7 +263,7 @@ function TreeEntries({
         const childNode = tree[entry.path];
         const isExpanded = childNode?.expanded ?? false;
         const isOpen = entry.path === openPath;
-        const isClickable = entry.is_text || entry.is_sqlite || getExt(entry.name) === "pdf" || IMAGE_EXTS.has(getExt(entry.name));
+        const isClickable = entry.is_text || entry.is_sqlite || getExt(entry.name) === "pdf" || IMAGE_EXTS.has(getExt(entry.name)) || VIDEO_EXTS.has(getExt(entry.name)) || AUDIO_EXTS.has(getExt(entry.name));
         const isRenaming = renamingPath === entry.path;
 
         if (entry.type === "dir") {
@@ -1574,6 +1579,25 @@ function ImageViewer({ sessionId, path }: { sessionId: string; path: string }) {
   );
 }
 
+// ── Video / Audio Viewer ──────────────────────────────────────────────────────
+// Stream straight from the fs/media URL (Range-enabled, cache-friendly) instead
+// of buffering a blob, so seeking works and large files don't load into memory.
+function VideoViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  return (
+    <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "var(--bg-deep)" }}>
+      <video src={mediaFileUrl(sessionId, path)} controls preload="metadata" style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 4 }} />
+    </div>
+  );
+}
+
+function AudioViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  return (
+    <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg-deep)" }}>
+      <audio src={mediaFileUrl(sessionId, path)} controls preload="metadata" style={{ width: "100%", maxWidth: 600 }} />
+    </div>
+  );
+}
+
 // ── Archive Viewer ───────────────────────────────────────────────────────────
 export function ArchiveViewer({ sessionId, path }: { sessionId: string; path: string }) {
   const [entries, setEntries] = useState<string[]>([]);
@@ -2084,6 +2108,13 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
         return;
       }
 
+      if (VIDEO_EXTS.has(getExt(entry.name)) || AUDIO_EXTS.has(getExt(entry.name))) {
+        const kind = VIDEO_EXTS.has(getExt(entry.name)) ? "video" : "audio";
+        setOpenFile({ path: entry.path, content: "", savedContent: "", kind, isSqlite: false, size: entry.size ?? undefined });
+        setViewMode("preview");
+        return;
+      }
+
       try {
         const res = await readFile(sessionId, entry.path);
         const kind = getFileKind(res.path, false);
@@ -2303,7 +2334,7 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
                 {viewMode === "preview" ? "Edit" : "Preview"}
               </button>
             )}
-            {openFile && !openFile.isSqlite && openFile.kind !== "pdf" && openFile.kind !== "image" && (
+            {openFile && !openFile.isSqlite && openFile.kind !== "pdf" && openFile.kind !== "image" && openFile.kind !== "video" && openFile.kind !== "audio" && (
               <button
                 onClick={() => {
                   const text = previewContent ?? openFile.content;
@@ -2320,7 +2351,7 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
                 Copy
               </button>
             )}
-            {openFile && !openFile.isSqlite && openFile.kind !== "pdf" && openFile.kind !== "image" && (
+            {openFile && !openFile.isSqlite && openFile.kind !== "pdf" && openFile.kind !== "image" && openFile.kind !== "video" && openFile.kind !== "audio" && (
               <button
                 onClick={handleSave}
                 disabled={!isModified || saving}
@@ -2491,7 +2522,7 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
               ) : searchResults ? (
                 <>
                   {searchResults.map((entry) => {
-                    const isClickable = entry.is_text || entry.is_sqlite || getExt(entry.name) === "pdf" || IMAGE_EXTS.has(getExt(entry.name));
+                    const isClickable = entry.is_text || entry.is_sqlite || getExt(entry.name) === "pdf" || IMAGE_EXTS.has(getExt(entry.name)) || VIDEO_EXTS.has(getExt(entry.name)) || AUDIO_EXTS.has(getExt(entry.name));
                     const isOpen = entry.path === openFile?.path;
                     return (
                       <div
@@ -2694,6 +2725,10 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
                   <PdfViewer sessionId={sessionId} path={openFile.path} />
                 ) : openFile.kind === "image" ? (
                   <ImageViewer sessionId={sessionId} path={openFile.path} />
+                ) : openFile.kind === "video" ? (
+                  <VideoViewer sessionId={sessionId} path={openFile.path} />
+                ) : openFile.kind === "audio" ? (
+                  <AudioViewer sessionId={sessionId} path={openFile.path} />
                 ) : previewContent !== null ? (
                   // Preview overlay (Format JSON / → YAML / → JSON)
                   (() => {

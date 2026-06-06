@@ -726,6 +726,15 @@ export function readFile(
   );
 }
 
+// Direct streaming URL for inline <video>/<audio> playback. The fs/media route
+// is served outside RequireUser and authenticates this query token itself
+// (media tags can't send an Authorization header). http.ServeContent gives
+// Range/seeking + browser caching, so this is a plain URL, not a blob.
+export function mediaFileUrl(sessionId: string, path: string): string {
+  const token = localStorage.getItem("token") || "";
+  return apiPath(`/api/sessions/${sessionId}/fs/media?path=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}`);
+}
+
 export async function fetchRawFileBlob(
   sessionId: string,
   path: string

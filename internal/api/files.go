@@ -33,7 +33,8 @@ const (
 	filesMaxUpload      = 16 * 1024 * 1024  // MAX_UPLOAD_SIZE — fs/upload cap
 	filesMaxAttachment  = 50 * 1024 * 1024  // MAX_ATTACHMENT_SIZE — upload-attachment/image cap
 	filesArchiveMaxSize = 100 * 1024 * 1024 // ARCHIVE_MAX_SIZE — archive-list / extract cap
-	filesRawMaxSize     = 100 * 1024 * 1024 // fs/raw cap
+	filesRawMaxSize     = 100 * 1024 * 1024        // fs/raw cap
+	filesMediaMaxSize   = 2 * 1024 * 1024 * 1024   // fs/media cap (streamed; just a sanity bound)
 	filesDownloadMax    = 100 * 1024 * 1024 // _DOWNLOAD_MAX_BYTES — download-zip cap
 	filesSqliteRowLimit = 500               // SQLITE_ROW_LIMIT
 	filesArchiveMaxEnts = 2000              // _list_archive_entries cap
@@ -313,6 +314,16 @@ func fsRaw(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	serveFileContent(w, r, target, info, download)
+}
+
+// serveFileContent streams target with HTTP Range / conditional-GET support via
+// http.ServeContent (206 Partial Content + Accept-Ranges for <video>/<audio>
+// seeking; If-Range / If-None-Match / If-Modified-Since → 304 for caching). It
+// sets the Content-Type from the extension, an ETag derived from mtime+size,
+// and a private Cache-Control. The caller has already done auth, traversal, and
+// size checks; info is the Stat result for target.
+func serveFileContent(w http.ResponseWriter, r *http.Request, target string, info os.FileInfo, download bool) {
 	f, err := os.Open(target)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "file not found")
@@ -325,12 +336,62 @@ func fsRaw(d Deps, w http.ResponseWriter, r *http.Request) {
 		ct = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ct)
+	w.Header().Set("ETag", fmt.Sprintf(`"%x-%x"`, info.ModTime().UnixNano(), info.Size()))
+	w.Header().Set("Cache-Control", "private, max-age=3600")
 	if download {
 		encoded := url.PathEscape(filepath.Base(target))
 		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+encoded)
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, f)
+	http.ServeContent(w, r, filepath.Base(target), info.ModTime(), f)
+}
+
+// fsServeMedia streams an audio/video (or any) file for inline playback via a
+// <video>/<audio> element. Those tags cannot send an Authorization header, so —
+// like fsServeUploadedImage — auth is via the query `token` param, verified
+// alongside a session-ownership check. The path is resolved traversal-safe
+// inside the session cwd and served through serveFileContent (Range + caching).
+func fsServeMedia(d Deps, w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := d.Auth.VerifyToken(token)
+	if err != nil || id == nil || id.Username == "" {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	sessionID := chi.URLParam(r, "id")
+	sess, serr := d.Store.GetSession(sessionID)
+	if serr != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if sess == nil || sess.OwnerID != id.Username {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeErr(w, http.StatusUnprocessableEntity, "path required")
+		return
+	}
+	target, ok := filesResolve(w, sess.Cwd, path)
+	if !ok {
+		return
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.IsDir() {
+		writeErr(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if info.Size() > filesMediaMaxSize {
+		writeErr(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+	serveFileContent(w, r, target, info, false)
 }
 
 // ── GET /{id}/fs/dir-info ────────────────────────────────────────────────────

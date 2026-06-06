@@ -25,6 +25,9 @@ func sessionsRouter(d Deps) http.Handler {
 	// Authorization header, so the handler authenticates the query `token`
 	// param itself (VerifyToken + session-ownership check inside).
 	r.Get("/{id}/uploaded-image/{filename}", func(w http.ResponseWriter, req *http.Request) { fsServeUploadedImage(d, w, req) })
+	// Likewise for inline audio/video playback: <video>/<audio> tags can't send
+	// an Authorization header, so fsServeMedia authenticates the query token.
+	r.Get("/{id}/fs/media", func(w http.ResponseWriter, req *http.Request) { fsServeMedia(d, w, req) })
 
 	r.Group(func(r chi.Router) {
 		r.Use(d.Auth.RequireUser)

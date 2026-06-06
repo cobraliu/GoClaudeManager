@@ -1881,11 +1881,13 @@ function PlanApprovalBlock({ blockId, planText, planPath, options, onSubmit }: {
                   }}
                 />
               )}
-              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                <button onClick={() => setConfirm(null)} style={{ ...baseBtn, background: "var(--bg-hover)", color: "var(--text-secondary)", borderColor: "var(--border)" }}>Cancel</button>
+              {/* Left-aligned with Confirm first so the second click lands right
+                  under the option you just picked — no travel to the far right. */}
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-start" }}>
                 <button onClick={fire} style={{ ...baseBtn, background: "#1a2a3a", color: "#93c5fd", borderColor: "#1e40af" }}>
                   {wantsFeedback ? "发送给 Claude" : "Confirm"}
                 </button>
+                <button onClick={() => setConfirm(null)} style={{ ...baseBtn, background: "var(--bg-hover)", color: "var(--text-secondary)", borderColor: "var(--border)" }}>Cancel</button>
               </div>
             </div>
           );

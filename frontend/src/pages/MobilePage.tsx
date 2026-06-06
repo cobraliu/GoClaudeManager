@@ -54,6 +54,7 @@ import {
   listAvailableClaudeSessions,
   setClaudeSessionId,
   fetchRawFileBlob,
+  mediaFileUrl,
   browseExternalSessions,
   browseCodexSessions,
   browseCursorSessions,
@@ -3577,7 +3578,9 @@ function mobileFormatSize(bytes: number): string {
   return `${(bytes/1048576).toFixed(1)}M`;
 }
 
-type MobileFileKind = "code" | "markdown" | "csv" | "sqlite" | "pdf" | "image" | "html" | "text";
+type MobileFileKind = "code" | "markdown" | "csv" | "sqlite" | "pdf" | "image" | "video" | "audio" | "html" | "text";
+const MOBILE_VIDEO_EXTS = ["mp4","webm","ogv","mov","m4v","mkv"];
+const MOBILE_AUDIO_EXTS = ["mp3","wav","ogg","oga","m4a","aac","flac","opus"];
 function getMobileFileKind(entry: FileEntry): MobileFileKind {
   if (entry.is_sqlite) return "sqlite";
   const ext = entry.name.split(".").pop()?.toLowerCase() || "";
@@ -3586,6 +3589,8 @@ function getMobileFileKind(entry: FileEntry): MobileFileKind {
   if (ext === "md" || ext === "markdown") return "markdown";
   if (ext === "html" || ext === "htm") return "html";
   if (["png","jpg","jpeg","gif","webp","bmp","ico","svg","avif","tiff","tif","heic","heif"].includes(ext)) return "image";
+  if (MOBILE_VIDEO_EXTS.includes(ext)) return "video";
+  if (MOBILE_AUDIO_EXTS.includes(ext)) return "audio";
   if (FILE_CODE_EXTS.has(ext)) return "code";
   return "text";
 }
@@ -4208,6 +4213,8 @@ function MobileFileBrowserPanel({
       } catch (e) { setFileError(String(e)); }
       return;
     }
+    // Audio/video stream straight from the fs/media URL — no blob fetch.
+    if (kind === "video" || kind === "audio") { setFileError(""); setFileLoading(false); return; }
     if (!entry.is_text) { setFileContent(""); setFileError("Binary file — cannot preview"); return; }
     setFileLoading(true); setFileError(""); setFileContent("");
     try {
@@ -4304,7 +4311,8 @@ function MobileFileBrowserPanel({
           </div>
         );
       }
-      const clickable = entry.is_text || entry.is_sqlite || getMobileFileKind(entry) === "pdf" || getMobileFileKind(entry) === "image";
+      const mk = getMobileFileKind(entry);
+      const clickable = entry.is_text || entry.is_sqlite || mk === "pdf" || mk === "image" || mk === "video" || mk === "audio";
       return (
         <div key={entry.path}
           onClick={() => { if (longPressFired.current) return; if (clickable) openFile(entry); }}
@@ -4385,6 +4393,16 @@ function MobileFileBrowserPanel({
                     ? <img src={blobUrl} alt={previewEntry.name} style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 8, objectFit: "contain" }} />
                     : <div style={{ color: "var(--text-muted)" }}>Loading…</div>
                   }
+                </div>
+              )}
+              {kind === "video" && (
+                <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 12, background: "var(--bg-deep)" }}>
+                  <video src={mediaFileUrl(sessionId, previewEntry.path)} controls preload="metadata" style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 8 }} />
+                </div>
+              )}
+              {kind === "audio" && (
+                <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, background: "var(--bg-deep)" }}>
+                  <audio src={mediaFileUrl(sessionId, previewEntry.path)} controls preload="metadata" style={{ width: "100%" }} />
                 </div>
               )}
               {kind === "html" && (

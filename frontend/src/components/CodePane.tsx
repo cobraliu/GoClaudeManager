@@ -6,7 +6,7 @@ import {
   listFiles, dirStat, fetchRawFileBlob,
   getGitInfo,
   searchFiles, createDir, uploadFile, renameEntry, moveEntry, deleteEntry, writeFile, FileWriteConflictError,
-  downloadFile, downloadDirZip, getDirInfo, readFile,
+  downloadFile, downloadDirZip, getDirInfo, readFile, mediaFileUrl,
   getFileGitLog, getFileGitShow, getFileGitDiff,
   getCodeSubdirs, checkCodePathExists,
   type ChangedFile, type ChangedFilesWarning, type DirInfoResponse, type FileData, type FileEntry,
@@ -66,6 +66,12 @@ import { FileIcon } from "./FileIcon";
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "tiff", "tif", "ico", "svg"]);
 function isImage(name: string) { return IMAGE_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
+
+const VIDEO_EXTS = new Set(["mp4", "webm", "ogv", "mov", "m4v", "mkv"]);
+const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "oga", "m4a", "aac", "flac", "opus"]);
+function isVideo(name: string) { return VIDEO_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
+function isAudio(name: string) { return AUDIO_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
+function isMedia(name: string) { return isVideo(name) || isAudio(name); }
 function isMdFile(name: string) { return name.split(".").pop()?.toLowerCase() === "md"; }
 
 const SQLITE_EXTS = new Set(["db", "sqlite", "sqlite3"]);
@@ -105,6 +111,27 @@ function ImageViewer({ sessionId, path }: { sessionId: string; path: string }) {
   return (
     <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "var(--bg-deep)" }}>
       <img src={blobUrl} alt={path} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 4 }} />
+    </div>
+  );
+}
+
+// ── Video / Audio Viewer ────────────────────────────────────────────────────
+// Stream straight from the fs/media URL (HTTP Range → seeking + browser cache)
+// instead of buffering a blob, so playback starts immediately and large files
+// never load fully into memory.
+
+function VideoViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  return (
+    <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "var(--bg-deep)" }}>
+      <video src={mediaFileUrl(sessionId, path)} controls preload="metadata" style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 4 }} />
+    </div>
+  );
+}
+
+function AudioViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  return (
+    <div style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg-deep)" }}>
+      <audio src={mediaFileUrl(sessionId, path)} controls preload="metadata" style={{ width: "100%", maxWidth: 600 }} />
     </div>
   );
 }
@@ -1620,6 +1647,8 @@ function ViewerContent({
   const showSqlite = entry.is_sqlite ?? false;
   const showPdf = isPdfFile(entry.name);
   const showImage = isImage(entry.name);
+  const showVideo = isVideo(entry.name);
+  const showAudio = isAudio(entry.name);
   const isMd = isMdFile(entry.name);
   const isHtml = isHtmlFile(entry.name);
   const isJsonl = isJsonlFile(entry.name);
@@ -1633,6 +1662,8 @@ function ViewerContent({
   if (showSqlite) return <SqliteViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
   if (showPdf) return <PdfViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
   if (showImage) return <ImageViewer sessionId={sessionId} path={entry.path} />;
+  if (showVideo) return <VideoViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
+  if (showAudio) return <AudioViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
   if (fileLoading && !fileData) return <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)", fontSize: 12 }}>Loading…</div>;
   if (showHtml) return <HtmlViewer key={fileData!.path + ":html"} sessionId={sessionId} path={fileData!.path} initialContent={fileData!.content} />;
   if (showJsonlTable) return <JsonlViewer key={fileData!.path + ":jsonl"} content={fileData!.content} />;
@@ -1705,7 +1736,7 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
 
   useEffect(() => {
     const n = path.split("/").pop() ?? path;
-    const metaOnly = isArchiveFile(n) || isSqliteFile(n) || isPdfFile(n) || isImage(n);
+    const metaOnly = isArchiveFile(n) || isSqliteFile(n) || isPdfFile(n) || isImage(n) || isMedia(n);
     let mounted = true;
     setFileData(null);
     setFileLoading(true);
@@ -2479,7 +2510,7 @@ export function CodePane({
   }, [toolForm]);
 
   const loadFile = useCallback(async (entry: FileEntry, scroll = false) => {
-    if (isImage(entry.name) || entry.is_sqlite || isPdfFile(entry.name) || entry.is_archive) {
+    if (isImage(entry.name) || isMedia(entry.name) || entry.is_sqlite || isPdfFile(entry.name) || entry.is_archive) {
       setFileData(null); setSelectedEntry(entry); setScrollToFirst(false); return;
     }
     setFileLoading(true); setScrollToFirst(scroll);
@@ -2540,7 +2571,7 @@ export function CodePane({
         if (treeOnly) return; // FileViewerPane handles its own refresh
 
         if (!autoFollowRef.current) {
-          if (selectedEntry && !isImage(selectedEntry.name) && !selectedEntry.is_sqlite && !selectedEntry.is_archive) {
+          if (selectedEntry && !isImage(selectedEntry.name) && !isMedia(selectedEntry.name) && !selectedEntry.is_sqlite && !selectedEntry.is_archive) {
             const data = await getCodeFile(sessionId, selectedEntry.path).catch(() => null);
             if (mounted && data) setFileData(data);
           }
