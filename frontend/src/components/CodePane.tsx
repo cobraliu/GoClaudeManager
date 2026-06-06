@@ -5,7 +5,7 @@ import {
   getCodeChangedFiles, getCodeFile,
   listFiles, dirStat, fetchRawFileBlob,
   getGitInfo,
-  searchFiles, createDir, uploadFile, renameEntry, moveEntry, deleteEntry, writeFile, FileWriteConflictError,
+  searchFiles, createDir, uploadFiles, renameEntry, moveEntry, deleteEntry, writeFile, FileWriteConflictError,
   downloadFile, downloadDirZip, getDirInfo, readFile, mediaFileUrl,
   getFileGitLog, getFileGitShow, getFileGitDiff,
   getCodeSubdirs, checkCodePathExists,
@@ -254,8 +254,53 @@ interface DirState {
   open: boolean;
 }
 
+// Pending inline create-in-tree (VSCode style). `parent` is the target dir
+// path ("" = repo root); only one row exists at a time.
+export interface CreateTarget {
+  parent: string;
+  kind: "file" | "dir";
+}
+
+// VSCode-style inline editable row rendered directly inside the tree at the
+// target folder. Enter commits, Esc/blur cancels.
+function InlineCreateRow({
+  depth, kind, onCommit, onCancel,
+}: {
+  depth: number;
+  kind: "file" | "dir";
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const indent = depth * 14 + 6;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5, padding: `2px 8px 2px ${indent}px` }}>
+      <span style={{ minWidth: 8, flexShrink: 0 }} />
+      <FileIcon isDir={kind === "dir"} name={kind === "file" ? (value.split("/").pop() || "x") : undefined} />
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); onCommit(value); }
+          else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+        }}
+        onBlur={onCancel}
+        placeholder={kind === "file" ? "filename" : "folder name"}
+        style={{
+          flex: 1, minWidth: 0, fontSize: 12, fontFamily: "monospace",
+          background: "var(--bg-base)", color: "var(--text)",
+          border: "1px solid var(--accent-blue)", borderRadius: 3,
+          padding: "1px 4px", outline: "none",
+        }}
+      />
+    </div>
+  );
+}
+
 function FileTreeDir({
-  sessionId, entry, depth, selected, changed, onSelect, onEntryContextMenu, revealPath, refreshKey, showHidden,
+  sessionId, entry, depth, selected, changed, onSelect, onDirClick, onEntryContextMenu, revealPath, refreshKey, showHidden,
+  createTarget, onCreateCommit, onCreateCancel,
 }: {
   sessionId: string;
   entry: FileEntry;
@@ -263,10 +308,14 @@ function FileTreeDir({
   selected: string | null;
   changed: Set<string>;
   onSelect: (entry: FileEntry) => void;
+  onDirClick?: (entry: FileEntry) => void;
   onEntryContextMenu?: (e: React.MouseEvent, entry: FileEntry) => void;
   revealPath?: string | null;
   refreshKey?: number;
   showHidden?: boolean;
+  createTarget?: CreateTarget | null;
+  onCreateCommit?: (name: string) => void;
+  onCreateCancel?: () => void;
 }) {
   const [state, setState] = useState<DirState>({ entries: [], loaded: false, loading: false, open: depth === 0 });
 
@@ -299,6 +348,18 @@ function FileTreeDir({
     });
   }, [revealPath, entry.path, sessionId, showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // When this dir becomes the inline-create target, ensure it's open + loaded
+  // so the editable row is visible underneath it.
+  useEffect(() => {
+    if (createTarget?.parent !== entry.path) return;
+    setState((s) => s.open ? s : { ...s, open: true });
+    listFiles(sessionId, entry.path, showHidden).then((res) => {
+      setState((s) => s.loaded ? s : { ...s, entries: res.entries, loaded: true, loading: false });
+    }).catch(() => {
+      setState((s) => s.loaded ? s : { ...s, loaded: true, loading: false });
+    });
+  }, [createTarget, entry.path, sessionId, showHidden]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Re-fetch when refreshKey or showHidden changes
   useEffect(() => {
     if (!state.loaded || !state.open) return;
@@ -318,21 +379,25 @@ function FileTreeDir({
 
   const indent = depth * 14 + 6;
   const isChanged = changed.has(entry.path);
+  const isActive = selected === entry.path;
 
   return (
     <div>
       <div
-        onClick={toggle}
+        onClick={() => { toggle(); onDirClick?.(entry); }}
         onContextMenu={onEntryContextMenu ? (e) => onEntryContextMenu(e, entry) : undefined}
         style={{
           display: "flex", alignItems: "center", gap: 5,
           padding: `2px 8px 2px ${indent}px`,
           cursor: "pointer", userSelect: "none",
-          color: isChanged ? "#fbbf24" : "var(--text-secondary)",
+          background: isActive ? "var(--bg-hover)" : "transparent",
+          borderLeft: isActive ? "2px solid var(--accent-blue)" : "2px solid transparent",
+          color: isActive ? "var(--text)" : (isChanged ? "#fbbf24" : "var(--text-secondary)"),
+          fontWeight: isActive ? 600 : undefined,
           fontSize: 12,
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-surface)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+        onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-surface)"; }}
+        onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
       >
         <span style={{ fontSize: 9, color: "var(--text-muted)", minWidth: 8, textAlign: "center", flexShrink: 0 }}>
           {state.loading ? "…" : state.open ? "▾" : "▸"}
@@ -345,14 +410,18 @@ function FileTreeDir({
       </div>
       {state.open && state.loaded && (
         <div>
-          {state.entries.length === 0 && (
+          {createTarget?.parent === entry.path && onCreateCommit && onCreateCancel && (
+            <InlineCreateRow depth={depth + 1} kind={createTarget.kind} onCommit={onCreateCommit} onCancel={onCreateCancel} />
+          )}
+          {state.entries.length === 0 && createTarget?.parent !== entry.path && (
             <div style={{ paddingLeft: indent + 26, fontSize: 11, color: "var(--text-faint)", padding: `1px 0 1px ${indent + 26}px` }}>empty</div>
           )}
           {state.entries.map((child) =>
             child.type === "dir" ? (
               <FileTreeDir
                 key={child.path} sessionId={sessionId} entry={child}
-                depth={depth + 1} selected={selected} changed={changed} onSelect={onSelect} onEntryContextMenu={onEntryContextMenu} revealPath={revealPath} refreshKey={refreshKey} showHidden={showHidden}
+                depth={depth + 1} selected={selected} changed={changed} onSelect={onSelect} onDirClick={onDirClick} onEntryContextMenu={onEntryContextMenu} revealPath={revealPath} refreshKey={refreshKey} showHidden={showHidden}
+                createTarget={createTarget} onCreateCommit={onCreateCommit} onCreateCancel={onCreateCancel}
               />
             ) : (
               <FileTreeFile
@@ -391,7 +460,8 @@ function FileTreeFile({
         cursor: "pointer", fontSize: 12,
         background: isSelected ? "var(--bg-hover)" : "transparent",
         borderLeft: isSelected ? "2px solid var(--accent-blue)" : "2px solid transparent",
-        color: isChanged ? "#fbbf24" : "var(--text-secondary)",
+        color: isSelected ? "var(--text)" : (isChanged ? "#fbbf24" : "var(--text-secondary)"),
+        fontWeight: isSelected ? 600 : undefined,
       }}
       onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = "var(--bg-surface)"; }}
       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
@@ -409,16 +479,21 @@ function FileTreeFile({
 // ── Root tree (loads top-level entries once) ──────────────────────────────
 
 function FileTree({
-  sessionId, selected, changed, onSelect, onEntryContextMenu, revealPath, refreshKey, showHidden,
+  sessionId, selected, changed, onSelect, onDirClick, onEntryContextMenu, revealPath, refreshKey, showHidden,
+  createTarget, onCreateCommit, onCreateCancel,
 }: {
   sessionId: string;
   selected: string | null;
   changed: Set<string>;
   onSelect: (entry: FileEntry) => void;
+  onDirClick?: (entry: FileEntry) => void;
   onEntryContextMenu?: (e: React.MouseEvent, entry: FileEntry) => void;
   revealPath?: string | null;
   refreshKey?: number;
   showHidden?: boolean;
+  createTarget?: CreateTarget | null;
+  onCreateCommit?: (name: string) => void;
+  onCreateCancel?: () => void;
 }) {
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
 
@@ -448,16 +523,21 @@ function FileTree({
     return () => dirWatch.unregister("");
   }, [dirWatch]);
 
+  const creatingAtRoot = createTarget?.parent === "" && !!onCreateCommit && !!onCreateCancel;
   if (entries === null) return <div style={{ padding: "8px 12px", color: "var(--text-faint)", fontSize: 11 }}>Loading…</div>;
-  if (entries.length === 0) return <div style={{ padding: "8px 12px", color: "var(--text-faint)", fontSize: 11 }}>Empty</div>;
+  if (entries.length === 0 && !creatingAtRoot) return <div style={{ padding: "8px 12px", color: "var(--text-faint)", fontSize: 11 }}>Empty</div>;
 
   return (
     <>
+      {creatingAtRoot && (
+        <InlineCreateRow depth={0} kind={createTarget!.kind} onCommit={onCreateCommit!} onCancel={onCreateCancel!} />
+      )}
       {entries.map((e) =>
         e.type === "dir" ? (
           <FileTreeDir
             key={e.path} sessionId={sessionId} entry={e}
-            depth={0} selected={selected} changed={changed} onSelect={onSelect} onEntryContextMenu={onEntryContextMenu} revealPath={revealPath} refreshKey={refreshKey} showHidden={showHidden}
+            depth={0} selected={selected} changed={changed} onSelect={onSelect} onDirClick={onDirClick} onEntryContextMenu={onEntryContextMenu} revealPath={revealPath} refreshKey={refreshKey} showHidden={showHidden}
+            createTarget={createTarget} onCreateCommit={onCreateCommit} onCreateCancel={onCreateCancel}
           />
         ) : (
           <FileTreeFile
@@ -2404,6 +2484,13 @@ export function CodePane({
   const [changedFiles, setChangedFiles] = useState<ChangedFile[]>([]);
   const [changedWarnings, setChangedWarnings] = useState<ChangedFilesWarning[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<FileEntry | null>(null);
+  // Path of the most recently clicked tree row (file OR folder), highlighted
+  // distinctly so the user can see their latest selection.
+  const [lastClicked, setLastClicked] = useState<string | null>(null);
+  // Whether the last-clicked row was a directory (drives the create target).
+  const [lastClickedIsDir, setLastClickedIsDir] = useState(false);
+  // VSCode-style inline create: an editable row rendered in the tree at `parent`.
+  const [pendingCreate, setPendingCreate] = useState<CreateTarget | null>(null);
   const [fileData, setFileData] = useState<FileData | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [autoFollow, setAutoFollow] = useState(true);
@@ -2416,7 +2503,7 @@ export function CodePane({
   const [selectedFromChanges, setSelectedFromChanges] = useState(true);
 
   // ── Toolbar / action state (ported from FileEditorModal) ───────────────────
-  type ToolForm = null | "search" | "newFile" | "newFolder" | "upload" | "historySearch";
+  type ToolForm = null | "search" | "upload" | "historySearch";
   const [toolForm, setToolForm] = useState<ToolForm>(null);
   const [toolError, setToolError] = useState("");
   const [toolBusy, setToolBusy] = useState(false);
@@ -2424,13 +2511,11 @@ export function CodePane({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<FileEntry[] | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
-  // New file / folder
-  const [newName, setNewName] = useState("");
-  const [newParent, setNewParent] = useState("");
   // Upload
   const [uploadDir, setUploadDir] = useState("");
-  const [uploadPending, setUploadPending] = useState<File | null>(null);
-  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploadCount, setUploadCount] = useState(0); // files in flight (busy indicator)
+  const filesInputRef = useRef<HTMLInputElement | null>(null);
+  const dirInputRef = useRef<HTMLInputElement | null>(null);
   // History search by path
   const [historySearchPath, setHistorySearchPath] = useState("");
   // Hidden files toggle (persisted, shared with FileEditorModal)
@@ -2504,10 +2589,20 @@ export function CodePane({
   useEffect(() => {
     setToolError(""); setToolBusy(false);
     if (toolForm !== "search") { setSearchQuery(""); setSearchResults(null); }
-    if (toolForm !== "newFile" && toolForm !== "newFolder") { setNewName(""); setNewParent(""); }
-    if (toolForm !== "upload") { setUploadDir(""); setUploadPending(null); }
+    if (toolForm !== "upload") { setUploadDir(""); }
     if (toolForm !== "historySearch") setHistorySearchPath("");
   }, [toolForm]);
+
+  // While the upload form is open, keep the target dir in sync with the folder
+  // currently highlighted in the file tree (dir → itself, file → its parent).
+  useEffect(() => {
+    if (toolForm !== "upload") return;
+    const sel = selectedEntry;
+    const dir = sel
+      ? (sel.type === "dir" ? sel.path : (sel.path.includes("/") ? sel.path.split("/").slice(0, -1).join("/") : ""))
+      : "";
+    setUploadDir(dir);
+  }, [toolForm, selectedEntry]);
 
   const loadFile = useCallback(async (entry: FileEntry, scroll = false) => {
     if (isImage(entry.name) || isMedia(entry.name) || entry.is_sqlite || isPdfFile(entry.name) || entry.is_archive) {
@@ -2523,6 +2618,7 @@ export function CodePane({
   }, [sessionId]);
 
   const handleSelect = useCallback((entry: FileEntry) => {
+    setLastClicked(entry.path); setLastClickedIsDir(entry.type === "dir");
     if (treeOnly && onFileSelect) {
       selectedRef.current = entry.path;
       onFileSelect(entry.path, "full");
@@ -2535,6 +2631,8 @@ export function CodePane({
 
   const loadFileRef = useRef(loadFile);
   loadFileRef.current = loadFile;
+
+  const prevSelPathRef = useRef<string | null>(null);
   useEffect(() => {
     if (treeOnly || !openPath?.path) return;
     const name = openPath.path.split("/").pop() ?? openPath.path;
@@ -2604,7 +2702,7 @@ export function CodePane({
   }, [sessionId, loadFile, treeOnly, selectedEntry]);
 
   useEffect(() => {
-    setChangedFiles([]); setSelectedEntry(null); setFileData(null);
+    setChangedFiles([]); setSelectedEntry(null); setFileData(null); setLastClicked(null); setPendingCreate(null);
     setAutoFollow(true); setViewMode("full"); setMdPreview(true);
     setSelectedFromChanges(true);
     selectedRef.current = null;
@@ -2616,47 +2714,74 @@ export function CodePane({
   const highlightedPath = treeOnly ? (selectedPathExternal ?? null) : (selectedEntry?.path ?? null);
   const selectedChanged = changedFiles.find((f) => f.path === (treeOnly ? selectedPathExternal : selectedEntry?.path));
 
+  // Keep the "last clicked" highlight following the open file when it changes
+  // for real (manual click, external tab, or auto-follow), but ignore the
+  // periodic poll re-setting the same path (which would otherwise clobber a
+  // folder selection). Folder clicks set lastClicked directly via onDirClick
+  // and don't change highlightedPath, so they survive here.
+  useEffect(() => {
+    if (highlightedPath && highlightedPath !== prevSelPathRef.current) { setLastClicked(highlightedPath); setLastClickedIsDir(false); }
+    prevSelPathRef.current = highlightedPath;
+  }, [highlightedPath]);
+
   // ── Action handlers ─────────────────────────────────────────────────────────
   const bumpFilesRefresh = useCallback(() => setFilesRefreshKey((k) => k + 1), []);
 
-  const handleCreateFile = useCallback(async () => {
-    const name = newName.trim();
-    if (!name) { setToolError("filename required"); return; }
-    if (/[/\\]/.test(name)) { setToolError("name cannot contain / or \\"); return; }
-    setToolBusy(true); setToolError("");
-    try {
-      const path = newParent ? `${newParent}/${name}` : name;
-      await writeFile(sessionId, path, "");
-      bumpFilesRefresh();
-      setToolForm(null);
-    } catch (e) { setToolError(String(e)); }
-    finally { setToolBusy(false); }
-  }, [sessionId, newName, newParent, bumpFilesRefresh]);
+  // Begin a VSCode-style inline create. `parent` is the target dir, derived from
+  // an explicit dir (context menu) or the last-clicked tree row (toolbar).
+  const startCreate = useCallback((kind: "file" | "dir", parent: string) => {
+    setToolForm(null); setToolError("");
+    setPendingCreate({ kind, parent });
+  }, []);
 
-  const handleCreateFolder = useCallback(async () => {
-    const name = newName.trim();
-    if (!name) { setToolError("folder name required"); return; }
-    if (/[/\\]/.test(name)) { setToolError("name cannot contain / or \\"); return; }
-    setToolBusy(true); setToolError("");
-    try {
-      const path = newParent ? `${newParent}/${name}` : name;
-      await createDir(sessionId, path);
-      bumpFilesRefresh();
-      setToolForm(null);
-    } catch (e) { setToolError(String(e)); }
-    finally { setToolBusy(false); }
-  }, [sessionId, newName, newParent, bumpFilesRefresh]);
+  // Begin a create targeting the last-clicked tree row: a dir → itself; a file
+  // → its parent; nothing selected → repo root.
+  const startCreateFromSelection = useCallback((kind: "file" | "dir") => {
+    let parent = "";
+    if (lastClicked) {
+      parent = lastClickedIsDir
+        ? lastClicked
+        : (lastClicked.includes("/") ? lastClicked.split("/").slice(0, -1).join("/") : "");
+    }
+    startCreate(kind, parent);
+  }, [lastClicked, lastClickedIsDir, startCreate]);
 
-  const handleUpload = useCallback(async () => {
-    if (!uploadPending) { setToolError("pick a file first"); return; }
+  // Commit the inline create. Empty name cancels (VSCode-like). Internal "/" is
+  // allowed — the backend creates intermediate dirs. On error the row stays open.
+  const handleInlineCreate = useCallback(async (name: string) => {
+    const cur = pendingCreate;
+    if (!cur) return;
+    const v = name.trim().replace(/^\/+|\/+$/g, "");
+    if (!v) { setPendingCreate(null); return; }
+    const path = cur.parent ? `${cur.parent}/${v}` : v;
     setToolBusy(true); setToolError("");
     try {
-      await uploadFile(sessionId, uploadDir, uploadPending);
+      if (cur.kind === "file") await writeFile(sessionId, path, "");
+      else await createDir(sessionId, path);
+      bumpFilesRefresh();
+      setPendingCreate(null);
+      if (cur.kind === "file") {
+        handleSelect({ name: v.split("/").pop() || v, path, type: "file", size: 0, is_text: true, is_skipped: false, is_sqlite: false, is_archive: false });
+      }
+    } catch (e) { setToolError(String(e)); }
+    finally { setToolBusy(false); }
+  }, [sessionId, pendingCreate, bumpFilesRefresh, handleSelect]);
+
+  // One-step upload: triggered by the native picker's onChange. `files` carry
+  // webkitRelativePath for folder uploads (recreates structure) and just a name
+  // for plain multi-file uploads. Uploads immediately to the current target dir.
+  const handleUploadSelected = useCallback(async (fileList: FileList | null) => {
+    const files = fileList ? Array.from(fileList) : [];
+    if (files.length === 0) return;
+    setToolBusy(true); setToolError(""); setUploadCount(files.length);
+    try {
+      const relpaths = files.map((f) => f.webkitRelativePath || f.name);
+      await uploadFiles(sessionId, uploadDir, files, relpaths);
       bumpFilesRefresh();
       setToolForm(null);
     } catch (e) { setToolError(String(e)); }
-    finally { setToolBusy(false); }
-  }, [sessionId, uploadDir, uploadPending, bumpFilesRefresh]);
+    finally { setToolBusy(false); setUploadCount(0); }
+  }, [sessionId, uploadDir, bumpFilesRefresh]);
 
   const handleRenameCommit = useCallback(async () => {
     if (!renameTarget) return;
@@ -2743,12 +2868,16 @@ export function CodePane({
   const secondRowItems = useMemo(() => [
     { key: "historySearch", label: "Git history by path", icon: "⏱", active: toolForm === "historySearch", onClick: () => setToolForm(toolForm === "historySearch" ? null : "historySearch") },
     { key: "search",    label: "Search files", icon: "🔍", active: toolForm === "search",    onClick: () => setToolForm(toolForm === "search" ? null : "search") },
-    { key: "newFile",   label: "New file",     icon: "+",  active: toolForm === "newFile",   onClick: () => setToolForm(toolForm === "newFile" ? null : "newFile") },
-    { key: "newFolder", label: "New folder",   icon: "📁", active: toolForm === "newFolder", onClick: () => setToolForm(toolForm === "newFolder" ? null : "newFolder") },
-    { key: "upload",    label: "Upload file",  icon: "⬆", active: toolForm === "upload",    onClick: () => setToolForm(toolForm === "upload" ? null : "upload") },
-    { key: "downloadCwd", label: dlLoading ? "Preparing zip…" : "Download cwd as zip", icon: "📦", active: false, onClick: dlLoading ? () => {} : handleDownloadCwd },
+    { key: "newFile",   label: "New file",     icon: "+",  active: pendingCreate?.kind === "file", onClick: () => startCreateFromSelection("file") },
+    { key: "newFolder", label: "New folder",   icon: "📁", active: pendingCreate?.kind === "dir",  onClick: () => startCreateFromSelection("dir") },
+    { key: "upload",    label: "Upload files/folder",  icon: "⬆", active: toolForm === "upload", onClick: () => {
+      // The target dir tracks the tree selection live (see effect above), so
+      // just toggle the form open/closed here.
+      setToolForm(toolForm === "upload" ? null : "upload");
+    } },
+    { key: "downloadCwd", label: dlLoading ? "Preparing zip…" : "Download cwd as zip", icon: "⤓📦", active: false, onClick: dlLoading ? () => {} : handleDownloadCwd },
     { key: "showHidden",  label: showHidden ? "Hide dot-prefixed files" : "Show dot-prefixed files", icon: ".*", active: showHidden, onClick: () => setShowHidden(!showHidden) },
-  ], [toolForm, dlLoading, handleDownloadCwd, showHidden, setShowHidden]);
+  ], [toolForm, dlLoading, handleDownloadCwd, showHidden, setShowHidden, pendingCreate, startCreateFromSelection]);
 
   const branchMaxWidth = useMemo(() => {
     if (toolbarWidth <= 0) return undefined;
@@ -2804,47 +2933,32 @@ export function CodePane({
                   style={inlineInputStyle}
                 />
               )}
-              {(toolForm === "newFile" || toolForm === "newFolder") && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Parent directory:</div>
-                  <DirPicker sessionId={sessionId} value={newParent} onChange={setNewParent} />
-                  <div style={{ display: "flex", gap: 4 }}>
-                    <input
-                      autoFocus
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") { e.preventDefault(); (toolForm === "newFile" ? handleCreateFile : handleCreateFolder)(); }
-                        if (e.key === "Escape") setToolForm(null);
-                      }}
-                      placeholder={toolForm === "newFile" ? "filename.py" : "new-dir-name"}
-                      style={{ ...inlineInputStyle, flex: 1 }}
-                    />
-                    <button onClick={toolForm === "newFile" ? handleCreateFile : handleCreateFolder} disabled={toolBusy || !newName.trim()}
-                      style={primaryBtn}>{toolBusy ? "…" : "OK"}</button>
-                    <button onClick={() => setToolForm(null)} style={ghostBtn}>✕</button>
-                  </div>
-                  {newName.trim() && (
-                    <div style={{ fontSize: 10, color: "var(--text-faint)", fontFamily: "monospace" }}>
-                      → {newParent ? `${newParent}/${newName.trim()}` : newName.trim()}
-                    </div>
-                  )}
-                </div>
-              )}
               {toolForm === "upload" && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Upload to:</div>
-                  <DirPicker sessionId={sessionId} value={uploadDir} onChange={setUploadDir} />
-                  <input ref={uploadInputRef} type="file" style={{ display: "none" }}
-                    onChange={(e) => setUploadPending(e.target.files?.[0] ?? null)} />
-                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    <button onClick={() => uploadInputRef.current?.click()} style={ghostBtn}>Choose…</button>
-                    <span style={{ fontSize: 10, color: uploadPending ? "var(--text-secondary)" : "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                      {uploadPending ? uploadPending.name : "No file chosen"}
+                  {/* Read-only target dir: driven entirely by the folder clicked
+                      in the file tree below (no manual picker). */}
+                  <div style={{ fontSize: 10, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
+                    <span>Upload to:</span>
+                    <span
+                      title="点击下方文件树中的文件夹来选择上传目录"
+                      style={{ flex: 1, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}
+                    >
+                      {uploadDir || "(root)"}
                     </span>
                   </div>
+                  <input ref={filesInputRef} type="file" multiple style={{ display: "none" }}
+                    onChange={(e) => { handleUploadSelected(e.target.files); e.target.value = ""; }} />
+                  <input
+                    ref={(el) => { dirInputRef.current = el; if (el) { el.setAttribute("webkitdirectory", ""); el.setAttribute("directory", ""); } }}
+                    type="file" multiple style={{ display: "none" }}
+                    onChange={(e) => { handleUploadSelected(e.target.files); e.target.value = ""; }} />
                   <div style={{ display: "flex", gap: 4 }}>
-                    <button onClick={handleUpload} disabled={toolBusy || !uploadPending} style={primaryBtn}>{toolBusy ? "Uploading…" : "Upload"}</button>
+                    <button onClick={() => filesInputRef.current?.click()} disabled={toolBusy} style={primaryBtn}>
+                      {toolBusy ? `上传中… (${uploadCount})` : "📄 选择文件"}
+                    </button>
+                    <button onClick={() => dirInputRef.current?.click()} disabled={toolBusy} style={primaryBtn}>
+                      {toolBusy ? "…" : "📁 选择文件夹"}
+                    </button>
                     <button onClick={() => setToolForm(null)} style={ghostBtn}>✕</button>
                   </div>
                 </div>
@@ -2891,13 +3005,17 @@ export function CodePane({
               <ExpandedDirWatchContext.Provider value={codeDirWatch}>
                 <FileTree
                   sessionId={sessionId}
-                  selected={highlightedPath}
+                  selected={lastClicked ?? highlightedPath}
                   changed={changedSet}
                   onSelect={handleSelect}
+                  onDirClick={(entry) => { setLastClicked(entry.path); setLastClickedIsDir(true); if (toolForm === "upload") setUploadDir(entry.path); }}
                   onEntryContextMenu={onEntryContextMenu}
                   revealPath={highlightedPath}
                   refreshKey={filesRefreshKey}
                   showHidden={showHidden}
+                  createTarget={pendingCreate}
+                  onCreateCommit={handleInlineCreate}
+                  onCreateCancel={() => setPendingCreate(null)}
                 />
               </ExpandedDirWatchContext.Provider>
             )}
@@ -3002,6 +3120,15 @@ export function CodePane({
             boxShadow: "0 6px 16px rgba(0,0,0,0.4)", minWidth: 160, padding: 4,
           }}
         >
+          <CtxItem label="New File…" onClick={() => {
+            const p = ctxMenu.entry.type === "dir" ? ctxMenu.entry.path : (ctxMenu.entry.path.includes("/") ? ctxMenu.entry.path.split("/").slice(0, -1).join("/") : "");
+            startCreate("file", p); setCtxMenu(null);
+          }} />
+          <CtxItem label="New Folder…" onClick={() => {
+            const p = ctxMenu.entry.type === "dir" ? ctxMenu.entry.path : (ctxMenu.entry.path.includes("/") ? ctxMenu.entry.path.split("/").slice(0, -1).join("/") : "");
+            startCreate("dir", p); setCtxMenu(null);
+          }} />
+          <div style={{ height: 1, background: "var(--bg-hover)", margin: "3px 0" }} />
           <CtxItem label="Rename…" onClick={() => { setRenameTarget({ entry: ctxMenu.entry, value: ctxMenu.entry.name }); setCtxMenu(null); }} />
           <CtxItem label="Move to…" onClick={() => { setMoveTarget({ entry: ctxMenu.entry, dest: "" }); setCtxMenu(null); }} />
           {ctxMenu.entry.type === "file" && (

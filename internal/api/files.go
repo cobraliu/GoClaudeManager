@@ -309,8 +309,14 @@ func fsRaw(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "file not found")
 		return
 	}
-	if info.Size() > filesRawMaxSize {
-		writeErr(w, http.StatusRequestEntityTooLarge, "file too large (>100MB)")
+	// Explicit downloads honor the admin download cap; inline preview/streaming
+	// keeps the larger raw cap so the viewer isn't restricted by it.
+	sizeCap := filesRawMaxSize
+	if download {
+		sizeCap = d.Cfg.DownloadMaxSize()
+	}
+	if info.Size() > int64(sizeCap) {
+		writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large (>%dMB)", sizeCap/1024/1024))
 		return
 	}
 
@@ -628,55 +634,77 @@ func fsUpload(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	if err := r.ParseMultipartForm(filesMaxUpload + 1<<20); err != nil {
+	maxSize := d.Cfg.UploadMaxSize()
+	// 16MB in-memory threshold; larger parts spill to temp files, so a folder
+	// upload of many files stays memory-bounded regardless of the per-file cap.
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}
-	path := r.FormValue("path")
-	file, hdr, err := r.FormFile("file")
-	if err != nil {
+	if r.MultipartForm == nil {
 		writeErr(w, http.StatusBadRequest, "file required")
 		return
 	}
-	defer file.Close()
-	if hdr.Filename == "" {
-		writeErr(w, http.StatusBadRequest, "filename required")
+	base := r.FormValue("path") // target dir relative to cwd ("" = root)
+	headers := r.MultipartForm.File["file"]
+	if len(headers) == 0 {
+		writeErr(w, http.StatusBadRequest, "file required")
 		return
 	}
+	// Parallel "relpath" values preserve folder structure (webkitRelativePath);
+	// fall back to the bare filename when absent (plain multi-file upload).
+	relpaths := r.MultipartForm.Value["relpath"]
 
-	content, err := io.ReadAll(io.LimitReader(file, filesMaxUpload+1))
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if len(content) > filesMaxUpload {
-		writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large (>%dMB)", filesMaxUpload/1024/1024))
-		return
-	}
-
-	var targetDir string
-	if path != "" {
-		var ok bool
-		targetDir, ok = filesResolve(w, s.Cwd, path)
+	for i, hdr := range headers {
+		if hdr.Filename == "" {
+			writeErr(w, http.StatusBadRequest, "filename required")
+			return
+		}
+		rel := ""
+		if i < len(relpaths) {
+			rel = relpaths[i]
+		}
+		if rel == "" {
+			rel = filepath.Base(hdr.Filename)
+		}
+		// Resolve base/rel together so traversal (..) is rejected and the
+		// destination is guaranteed to stay within the session cwd.
+		dest, ok := filesResolve(w, s.Cwd, filepath.Join(base, rel))
 		if !ok {
 			return
 		}
-	} else {
-		targetDir = filepath.Clean(s.Cwd)
-	}
-	if info, statErr := os.Stat(targetDir); statErr == nil && !info.IsDir() {
-		writeErr(w, http.StatusBadRequest, "target path is not a directory")
-		return
-	}
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	// filepath.Base on the upload filename guards against traversal in the name.
-	dest := filepath.Join(targetDir, filepath.Base(hdr.Filename))
-	if err := os.WriteFile(dest, content, 0o644); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+		if hdr.Size > int64(maxSize) {
+			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%s too large (>%dMB)", filepath.Base(rel), maxSize/1024/1024))
+			return
+		}
+
+		f, err := hdr.Open()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		content, err := io.ReadAll(io.LimitReader(f, int64(maxSize)+1))
+		f.Close()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(content) > maxSize {
+			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("%s too large (>%dMB)", filepath.Base(rel), maxSize/1024/1024))
+			return
+		}
+		if info, statErr := os.Stat(dest); statErr == nil && info.IsDir() {
+			writeErr(w, http.StatusBadRequest, "target path is a directory: "+rel)
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := os.WriteFile(dest, content, 0o644); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1203,10 +1231,12 @@ func fsDownloadZip(d Deps, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	dlMax := int64(d.Cfg.DownloadMaxSize())
+
 	// Single file: zip directly.
 	if !info.IsDir() {
-		if info.Size() > filesDownloadMax {
-			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large (%dMB > 100MB)", info.Size()/1024/1024))
+		if info.Size() > dlMax {
+			writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large (%dMB > %dMB)", info.Size()/1024/1024, dlMax/1024/1024))
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
@@ -1275,8 +1305,8 @@ func fsDownloadZip(d Deps, w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	if totalSize > filesDownloadMax {
-		writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("directory still too large after exclusions (%dMB > 100MB)", totalSize/1024/1024))
+	if totalSize > dlMax {
+		writeErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("directory still too large after exclusions (%dMB > %dMB)", totalSize/1024/1024, dlMax/1024/1024))
 		return
 	}
 

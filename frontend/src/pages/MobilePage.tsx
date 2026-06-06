@@ -30,7 +30,7 @@ import {
   listFiles,
   searchFiles,
   createDir,
-  uploadFile,
+  uploadFiles,
   renameEntry,
   moveEntry,
   deleteEntry,
@@ -3934,8 +3934,9 @@ function MobileFileBrowserPanel({
 
   // Upload
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadDirInputRef = useRef<HTMLInputElement | null>(null);
   const [uploadDir, setUploadDir] = useState("");
-  const [uploadFileObj, setUploadFileObj] = useState<File | null>(null);
+  const [uploadFilesList, setUploadFilesList] = useState<File[]>([]);
 
   // Rename
   const [renameValue, setRenameValue] = useState("");
@@ -4033,7 +4034,7 @@ function MobileFileBrowserPanel({
       setSheetBusy(false);
       setSearchQ(""); setSearchResults([]);
       setNewName(""); setNewParentDir(""); setNewDirChoices([]);
-      setUploadDir(""); setUploadFileObj(null);
+      setUploadDir(""); setUploadFilesList([]);
       setRenameValue("");
       setMoveDest(""); setMoveDirChoices([]);
       setDeleteRecursive(false);
@@ -4102,16 +4103,18 @@ function MobileFileBrowserPanel({
   }, [sessionId, newName, newParentDir, reloadAffected]);
 
   const doUpload = useCallback(async () => {
-    if (!uploadFileObj) { setSheetError("pick a file first"); return; }
+    if (uploadFilesList.length === 0) { setSheetError("pick a file first"); return; }
     setSheetBusy(true); setSheetError("");
     try {
-      await uploadFile(sessionId, uploadDir, uploadFileObj);
-      const dest = uploadDir ? `${uploadDir}/${uploadFileObj.name}` : uploadFileObj.name;
+      const relpaths = uploadFilesList.map((f) => f.webkitRelativePath || f.name);
+      await uploadFiles(sessionId, uploadDir, uploadFilesList, relpaths);
+      const first = relpaths[0];
+      const dest = uploadDir ? `${uploadDir}/${first}` : first;
       await reloadAffected(dest);
       setSheet(null);
     } catch (e) { setSheetError(String(e)); }
     finally { setSheetBusy(false); }
-  }, [sessionId, uploadDir, uploadFileObj, reloadAffected]);
+  }, [sessionId, uploadDir, uploadFilesList, reloadAffected]);
 
   const doRename = useCallback(async () => {
     if (!sheetTarget) return;
@@ -4470,8 +4473,8 @@ function MobileFileBrowserPanel({
           onCreateFile={doCreateFile} onCreateFolder={doCreateFolder}
           // upload
           uploadDir={uploadDir} setUploadDir={setUploadDir}
-          uploadFileObj={uploadFileObj} uploadInputRef={uploadInputRef}
-          onPickUploadFile={(f) => setUploadFileObj(f)}
+          uploadFilesList={uploadFilesList} uploadInputRef={uploadInputRef} uploadDirInputRef={uploadDirInputRef}
+          onPickUploadFiles={(files) => setUploadFilesList(files)}
           onUpload={doUpload}
           // rename
           renameValue={renameValue} setRenameValue={setRenameValue} onRename={doRename}
@@ -4530,9 +4533,10 @@ interface MobileFileSheetProps {
   onCreateFile: () => void; onCreateFolder: () => void;
   // upload
   uploadDir: string; setUploadDir: (v: string) => void;
-  uploadFileObj: File | null;
+  uploadFilesList: File[];
   uploadInputRef: React.MutableRefObject<HTMLInputElement | null>;
-  onPickUploadFile: (f: File) => void;
+  uploadDirInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onPickUploadFiles: (files: File[]) => void;
   onUpload: () => void;
   // rename
   renameValue: string; setRenameValue: (v: string) => void;
@@ -4668,14 +4672,26 @@ function MobileFileSheet(props: MobileFileSheetProps) {
                 <option value="">(root)</option>
                 {props.newDirChoices.filter(d => d !== "").map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
-              <label style={{ ...labelStyle, marginTop: 12 }}>File</label>
-              <input ref={props.uploadInputRef} type="file"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) props.onPickUploadFile(f); }}
+              <label style={{ ...labelStyle, marginTop: 12 }}>Files (multiple ok)</label>
+              <input ref={props.uploadInputRef} type="file" multiple
+                onChange={(e) => props.onPickUploadFiles(e.target.files ? Array.from(e.target.files) : [])}
                 style={{ ...inputStyle, padding: "8px 10px" }} />
-              {props.uploadFileObj && <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>{props.uploadFileObj.name} · {mobileFormatSize(props.uploadFileObj.size)}</div>}
+              <label style={{ ...labelStyle, marginTop: 12 }}>Or a folder</label>
+              <input
+                ref={(el) => { props.uploadDirInputRef.current = el; if (el) { el.setAttribute("webkitdirectory", ""); el.setAttribute("directory", ""); } }}
+                type="file" multiple
+                onChange={(e) => props.onPickUploadFiles(e.target.files ? Array.from(e.target.files) : [])}
+                style={{ ...inputStyle, padding: "8px 10px" }} />
+              {props.uploadFilesList.length > 0 && (
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6 }}>
+                  {props.uploadFilesList.length === 1
+                    ? `${props.uploadFilesList[0].webkitRelativePath || props.uploadFilesList[0].name} · ${mobileFormatSize(props.uploadFilesList[0].size)}`
+                    : `${props.uploadFilesList.length} files · ${mobileFormatSize(props.uploadFilesList.reduce((n, f) => n + f.size, 0))}`}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
                 <button onClick={onClose} style={secondaryBtn}>Cancel</button>
-                <button disabled={busy || !props.uploadFileObj} onClick={props.onUpload} style={{ ...primaryBtn, opacity: !props.uploadFileObj ? 0.5 : 1 }}>{busy ? "…" : "Upload"}</button>
+                <button disabled={busy || props.uploadFilesList.length === 0} onClick={props.onUpload} style={{ ...primaryBtn, opacity: props.uploadFilesList.length === 0 ? 0.5 : 1 }}>{busy ? "…" : "Upload"}</button>
               </div>
             </>
           )}

@@ -12,6 +12,8 @@ import {
   setStructuredBin,
   setProxy,
   setFileViewer,
+  setUploadMaxSize,
+  setDownloadMaxSize,
   setEnabledTools,
   setSkipDirs,
   setClaudeModels,
@@ -67,6 +69,10 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
   const [fvModeSaved, setFvModeSaved] = useState<FileViewerMode>("lines");
   const [fvMaxLinesSaved, setFvMaxLinesSaved] = useState<number>(3000);
   const [fvMaxBytesMbSaved, setFvMaxBytesMbSaved] = useState<number>(1);
+  const [uploadMaxMb, setUploadMaxMb] = useState<number>(8);
+  const [uploadMaxMbSaved, setUploadMaxMbSaved] = useState<number>(8);
+  const [downloadMaxMb, setDownloadMaxMb] = useState<number>(128);
+  const [downloadMaxMbSaved, setDownloadMaxMbSaved] = useState<number>(128);
   const [enabledTools, setEnabledToolsState] = useState<string[]>(["claude"]);
   const [enabledToolsSaved, setEnabledToolsSaved] = useState<string[]>(["claude"]);
   const [skipDirsInput, setSkipDirsInput] = useState("");
@@ -116,6 +122,12 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
       const mb = Math.max(0.1, Math.round((c.file_viewer_max_bytes / (1024 * 1024)) * 100) / 100);
       setFvMaxBytesMb(mb);
       setFvMaxBytesMbSaved(mb);
+      const upMb = Math.max(0.01, Math.round((c.upload_max_size / (1024 * 1024)) * 100) / 100);
+      setUploadMaxMb(upMb);
+      setUploadMaxMbSaved(upMb);
+      const dlMb = Math.max(0.01, Math.round((c.download_max_size / (1024 * 1024)) * 100) / 100);
+      setDownloadMaxMb(dlMb);
+      setDownloadMaxMbSaved(dlMb);
       setEnabledToolsState(c.enabled_tools);
       setEnabledToolsSaved(c.enabled_tools);
       const sd = c.skip_dirs.join(", ");
@@ -622,6 +634,77 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
               <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>
                 Lines mode minimum: 100. Size mode minimum: 4 KB. Unlimited returns the entire file
                 — beware of OOM on multi-GB files.
+              </p>
+            </div>
+
+            {/* Transfer limits (upload / download size caps) */}
+            <div style={cardStyle}>
+              <h3 style={{ marginBottom: 12, fontSize: 15 }}>Transfer Limits</h3>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+                Size caps for the FILES panel. <b>Upload</b> is enforced per file; <b>Download</b>
+                caps single-file and folder-zip downloads. Set independently (in MB).
+              </p>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-bright)" }}>
+                  Upload (MB):
+                  <input
+                    type="number"
+                    min={0.01}
+                    max={102400}
+                    step={1}
+                    value={uploadMaxMb}
+                    onChange={(e) => setUploadMaxMb(Math.max(0.01, Number(e.target.value) || 0))}
+                    style={{ ...inputStyle, width: 110 }}
+                  />
+                </label>
+                <button
+                  disabled={uploadMaxMb === uploadMaxMbSaved}
+                  onClick={async () => {
+                    try {
+                      const c = await setUploadMaxSize(Math.max(4096, Math.round(uploadMaxMb * 1024 * 1024)));
+                      const mb = Math.round((c.upload_max_size / (1024 * 1024)) * 100) / 100;
+                      setUploadMaxMb(mb);
+                      setUploadMaxMbSaved(mb);
+                      setMsg("Upload limit updated.");
+                    } catch (e) { setMsg(String(e)); }
+                  }}
+                  style={{ background: "#58a6ff", color: "#fff" }}
+                >
+                  Save
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-bright)" }}>
+                  Download (MB):
+                  <input
+                    type="number"
+                    min={0.01}
+                    max={102400}
+                    step={1}
+                    value={downloadMaxMb}
+                    onChange={(e) => setDownloadMaxMb(Math.max(0.01, Number(e.target.value) || 0))}
+                    style={{ ...inputStyle, width: 110 }}
+                  />
+                </label>
+                <button
+                  disabled={downloadMaxMb === downloadMaxMbSaved}
+                  onClick={async () => {
+                    try {
+                      const c = await setDownloadMaxSize(Math.max(4096, Math.round(downloadMaxMb * 1024 * 1024)));
+                      const mb = Math.round((c.download_max_size / (1024 * 1024)) * 100) / 100;
+                      setDownloadMaxMb(mb);
+                      setDownloadMaxMbSaved(mb);
+                      setMsg("Download limit updated.");
+                    } catch (e) { setMsg(String(e)); }
+                  }}
+                  style={{ background: "#58a6ff", color: "#fff" }}
+                >
+                  Save
+                </button>
+              </div>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", margin: 0 }}>
+                Minimum 4 KB each. Defaults: upload 8 MB, download 128 MB. Media playback streams
+                separately and is not affected by the download cap.
               </p>
             </div>
 

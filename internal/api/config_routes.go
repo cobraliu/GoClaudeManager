@@ -70,6 +70,8 @@ func registerTopLevelRoutes(r chi.Router, d Deps) {
 		rr.Put("/config/enabled-tools", func(w http.ResponseWriter, r *http.Request) { updateEnabledTools(d, w, r) })
 		rr.Put("/config/claude-models", func(w http.ResponseWriter, r *http.Request) { updateClaudeModels(d, w, r) })
 		rr.Put("/config/file-viewer", func(w http.ResponseWriter, r *http.Request) { updateFileViewer(d, w, r) })
+		rr.Put("/config/upload-max-size", func(w http.ResponseWriter, r *http.Request) { updateUploadMaxSize(d, w, r) })
+		rr.Put("/config/download-max-size", func(w http.ResponseWriter, r *http.Request) { updateDownloadMaxSize(d, w, r) })
 		rr.Put("/config/skip-dirs", func(w http.ResponseWriter, r *http.Request) { updateSkipDirs(d, w, r) })
 		rr.Put("/config/term-lifecycle", func(w http.ResponseWriter, r *http.Request) { updateTermLifecycle(d, w, r) })
 		rr.Put("/config/terminal-font", func(w http.ResponseWriter, r *http.Request) { updateTerminalFont(d, w, r) })
@@ -114,6 +116,8 @@ type configView struct {
 	FileViewerMode          string   `json:"file_viewer_mode"`
 	FileViewerMaxLines      int      `json:"file_viewer_max_lines"`
 	FileViewerMaxBytes      int      `json:"file_viewer_max_bytes"`
+	UploadMaxSize           int      `json:"upload_max_size"`
+	DownloadMaxSize         int      `json:"download_max_size"`
 	EnabledTools            []string `json:"enabled_tools"`
 	SkipDirs                []string `json:"skip_dirs"`
 	ClaudeModels            []string `json:"claude_models"`
@@ -141,6 +145,8 @@ func fullConfig(c *config.Config) configView {
 		FileViewerMode:          c.FileViewerMode(),
 		FileViewerMaxLines:      c.FileViewerMaxLines(),
 		FileViewerMaxBytes:      c.FileViewerMaxBytes(),
+		UploadMaxSize:           c.UploadMaxSize(),
+		DownloadMaxSize:         c.DownloadMaxSize(),
 		EnabledTools:            c.EnabledTools(),
 		SkipDirs:                c.SkipDirs(),
 		ClaudeModels:            c.ClaudeModels(),
@@ -295,6 +301,34 @@ func updateFileViewer(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := d.Cfg.SetFileViewer(mode, body.MaxLines, body.MaxBytes); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, fullConfig(d.Cfg))
+}
+
+func updateUploadMaxSize(d Deps, w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		UploadMaxSize int `json:"upload_max_size"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if err := d.Cfg.SetUploadMaxSize(body.UploadMaxSize); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, fullConfig(d.Cfg))
+}
+
+func updateDownloadMaxSize(d Deps, w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DownloadMaxSize int `json:"download_max_size"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if err := d.Cfg.SetDownloadMaxSize(body.DownloadMaxSize); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

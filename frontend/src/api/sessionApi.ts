@@ -271,6 +271,10 @@ export interface ConfigView {
   file_viewer_mode: FileViewerMode;
   file_viewer_max_lines: number;
   file_viewer_max_bytes: number;
+  /** Per-file upload size cap in bytes (admin-configurable; default 8MB). */
+  upload_max_size: number;
+  /** Single-file/zip download size cap in bytes (admin-configurable; default 128MB). */
+  download_max_size: number;
   enabled_tools: string[];
   skip_dirs: string[];
   claude_models: string[];
@@ -352,6 +356,20 @@ export function setFileViewer(
   return request("/api/config/file-viewer", {
     method: "PUT",
     body: JSON.stringify({ mode, max_lines, max_bytes }),
+  });
+}
+
+export function setUploadMaxSize(upload_max_size: number): Promise<ConfigView> {
+  return request("/api/config/upload-max-size", {
+    method: "PUT",
+    body: JSON.stringify({ upload_max_size }),
+  });
+}
+
+export function setDownloadMaxSize(download_max_size: number): Promise<ConfigView> {
+  return request("/api/config/download-max-size", {
+    method: "PUT",
+    body: JSON.stringify({ download_max_size }),
   });
 }
 
@@ -771,15 +789,25 @@ export async function downloadFile(sessionId: string, path: string): Promise<voi
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function uploadFile(
+/**
+ * Upload one or more files to `dirPath` (relative to the session cwd). Each
+ * file is sent as a `file` part with a parallel `relpath` part; pass
+ * `webkitRelativePath` in `relpaths` to recreate a folder's structure on the
+ * server, or omit it to drop every file directly into `dirPath`.
+ */
+export async function uploadFiles(
   sessionId: string,
   dirPath: string,
-  file: File
+  files: File[],
+  relpaths?: string[],
 ): Promise<void> {
   const token = localStorage.getItem("token") || "";
   const form = new FormData();
   form.append("path", dirPath);
-  form.append("file", file);
+  files.forEach((file, i) => {
+    form.append("file", file);
+    form.append("relpath", relpaths?.[i] || file.name);
+  });
   const resp = await fetch(apiPath(`/api/sessions/${sessionId}/fs/upload`), {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
@@ -788,8 +816,17 @@ export async function uploadFile(
   if (resp.status === 401) { localStorage.removeItem("token"); window.location.reload(); throw new Error("unauthorized"); }
   if (!resp.ok) {
     const text = await resp.text();
+    if (resp.status === 413) throw new Error(text || "file too large");
     throw new Error(text || `HTTP ${resp.status}`);
   }
+}
+
+export function uploadFile(
+  sessionId: string,
+  dirPath: string,
+  file: File
+): Promise<void> {
+  return uploadFiles(sessionId, dirPath, [file]);
 }
 
 export interface UploadedAttachment {

@@ -263,6 +263,37 @@ func (c *Config) SetFileViewer(mode string, maxLines, maxBytes int) error {
 	return c.SetFileViewerMaxBytes(maxBytes)
 }
 
+// Transfer-size limits: the upload cap (per file) and the download cap (single
+// file or directory zip). Admin-configurable; both clamp to a 4096-byte floor.
+// Defaults: upload 8MB, download 128MB.
+func (c *Config) UploadMaxSize() int {
+	if n, err := strconv.Atoi(c.get("upload_max_size", "")); err == nil && n >= 4096 {
+		return n
+	}
+	return 8 * 1024 * 1024
+}
+
+func (c *Config) DownloadMaxSize() int {
+	if n, err := strconv.Atoi(c.get("download_max_size", "")); err == nil && n >= 4096 {
+		return n
+	}
+	return 128 * 1024 * 1024
+}
+
+func (c *Config) SetUploadMaxSize(n int) error {
+	if n < 4096 {
+		n = 4096
+	}
+	return c.set("upload_max_size", strconv.Itoa(n))
+}
+
+func (c *Config) SetDownloadMaxSize(n int) error {
+	if n < 4096 {
+		n = 4096
+	}
+	return c.set("download_max_size", strconv.Itoa(n))
+}
+
 // DefaultTerminalFont mirrors config._DEFAULT_TERMINAL_FONT.
 const DefaultTerminalFont = `"Ubuntu Sans Mono", "WenQuanYi Micro Hei Mono", "WenQuanYi Zen Hei Mono", monospace`
 
