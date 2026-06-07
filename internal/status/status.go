@@ -172,6 +172,20 @@ func (m *Manager) Compute(s *model.Session) Computed {
 				} else if strings.Contains(screen, "Claude wants to use") ||
 					(strings.Contains(screen, "Esc to cancel") && reYesOption.MatchString(screen)) {
 					approve = hookApprove
+				} else if a, ok := claudestat.ParseAUQFromScreen(screen); ok {
+					// Newer Claude Code (≥2.1.x) reports an AskUserQuestion menu in
+					// the PID waiting file as a generic "permission prompt", so
+					// hintType is "approve" even though the screen shows an AUQ.
+					// The plan/permission checks above already claimed genuine
+					// approval prompts; ParseAUQFromScreen only matches a real AUQ
+					// widget (☐ header + numbered options + Type something/Chat
+					// about this), so reaching here means it's a misclassified AUQ.
+					// Surface it as AUQ and correct hintType so the hint/gating use
+					// the AUQ wording. This also avoids the hook-fallback's
+					// buried-id heuristic mis-marking a live AUQ as answered when
+					// the transcript is large and the id isn't flushed yet.
+					auq = a
+					hintType = "auq"
 				}
 			}
 		}
@@ -179,7 +193,7 @@ func (m *Manager) Compute(s *model.Session) Computed {
 
 	// Fallback AUQ from hooks when the PID file didn't flag waiting.
 	if auq == nil && eligible && agentID != "" {
-		if pending, ok := claudestat.PendingAUQFromHooks(agentID, s.Cwd); ok {
+		if pending, ok := claudestat.PendingAUQFromHooks(agentID, s.Cwd, pidWaiting); ok {
 			auq = pending
 		}
 	}

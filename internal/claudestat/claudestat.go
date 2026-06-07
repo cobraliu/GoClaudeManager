@@ -659,7 +659,11 @@ func CompactingFromScreen(tuiScreen string) (progress string, compacting bool) {
 //  2. Check the session JSONL — if the AUQ's tool_use_id already has a
 //     corresponding tool_result, the user has answered → return (nil, false).
 //  3. Otherwise it is pending; return its tool_input.
-func PendingAUQFromHooks(claudeSessionID, cwd string) (map[string]any, bool) {
+//
+// procWaiting tells whether the Claude process is currently blocked waiting for
+// input (from the PID session file). It only affects the ambiguous "id absent
+// from the tail of a large transcript" case — see auqAnsweredInJSONLWindow.
+func PendingAUQFromHooks(claudeSessionID, cwd string, procWaiting bool) (map[string]any, bool) {
 	home, ok := homeDir()
 	if !ok {
 		return nil, false
@@ -697,7 +701,7 @@ func PendingAUQFromHooks(claudeSessionID, cwd string) (map[string]any, bool) {
 	// with no id at all — leaves the AUQ genuinely pending.
 	jsonlPath := FindSessionJSONL(claudeSessionID, cwd)
 	if jsonlPath != "" {
-		if _, decided := auqAnsweredInJSONL(jsonlPath, latestAUQID); decided {
+		if _, decided := auqAnsweredInJSONL(jsonlPath, latestAUQID, procWaiting); decided {
 			return nil, false
 		}
 	}
@@ -712,14 +716,14 @@ func PendingAUQFromHooks(claudeSessionID, cwd string) (map[string]any, bool) {
 //	(false, true)  — id absent and file larger than the window → answered (buried)
 //	(false, false) — id seen without a tool_result, OR window covers whole file
 //	                 and id absent → genuinely pending (caller keeps the AUQ)
-func auqAnsweredInJSONL(jsonlPath, auqID string) (answered, decided bool) {
-	return auqAnsweredInJSONLWindow(jsonlPath, auqID, auqJSONLWindow)
+func auqAnsweredInJSONL(jsonlPath, auqID string, procWaiting bool) (answered, decided bool) {
+	return auqAnsweredInJSONLWindow(jsonlPath, auqID, auqJSONLWindow, procWaiting)
 }
 
 // auqAnsweredInJSONLWindow is auqAnsweredInJSONL with an injectable tail-scan
 // window (the production caller passes auqJSONLWindow; tests pass a small value
 // to exercise the buried-before-window branch without a multi-MB fixture).
-func auqAnsweredInJSONLWindow(jsonlPath, auqID string, window int64) (answered, decided bool) {
+func auqAnsweredInJSONLWindow(jsonlPath, auqID string, window int64, procWaiting bool) (answered, decided bool) {
 	f, err := os.Open(jsonlPath)
 	if err != nil {
 		return false, false
@@ -753,10 +757,51 @@ func auqAnsweredInJSONLWindow(jsonlPath, auqID string, window int64) (answered, 
 		}
 	}
 	if !idSeen && size > window {
-		return false, true // buried older than window → answered
+		// The id is absent from the tail window. Two possibilities a tail scan
+		// can't tell apart: (a) the AUQ was asked & answered long ago, buried
+		// before the window; (b) it was asked so recently it hasn't been flushed
+		// to the transcript yet — a live, pending AUQ (Claude writes the AUQ
+		// tool_use line only once the turn progresses, so a just-shown AUQ can be
+		// absent everywhere). When the process is NOT blocked waiting for input it
+		// can't be (b), so keep the cheap shortcut: buried → answered. When it IS
+		// waiting (e.g. right after a server restart re-reads status=waiting from
+		// disk), scan the earlier portion for a real tool_result: only a genuine
+		// answer suppresses it, so a not-yet-flushed pending AUQ is surfaced
+		// instead of being dropped as a false "answered".
+		if !procWaiting {
+			return false, true
+		}
+		if scanForResultBefore(jsonlPath, off, []byte(auqID), resultMark) {
+			return true, true
+		}
+		return false, false
 	}
 	// id seen without tool_result, or whole file scanned and id absent → pending.
 	return false, false
+}
+
+// scanForResultBefore reads the first `limit` bytes of the file and reports
+// whether any line contains both the AUQ id and a tool_result marker — i.e. the
+// AUQ was answered earlier in the transcript. Used only on the rare blocked-
+// waiting path, so the cost (one read of the pre-window region) is bounded to
+// sessions actually paused on an input prompt.
+func scanForResultBefore(jsonlPath string, limit int64, needle, resultMark []byte) bool {
+	if limit <= 0 {
+		return false
+	}
+	f, err := os.Open(jsonlPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, limit)
+	n, _ := readFull(f, buf)
+	for _, raw := range splitBytesNL(buf[:n]) {
+		if containsBytes(raw, needle) && containsBytes(raw, resultMark) {
+			return true
+		}
+	}
+	return false
 }
 
 // ── small byte/line utilities (stdlib-only) ────────────────────────────────

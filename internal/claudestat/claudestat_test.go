@@ -221,25 +221,45 @@ func TestAuqAnsweredInJSONLWindow(t *testing.T) {
 	// 1. id present WITH a tool_result on the same line → answered, decided.
 	answered := write("answered.jsonl",
 		`{"tool_use_id":"`+auqID+`","type":"tool_result"}`+"\n")
-	if a, d := auqAnsweredInJSONLWindow(answered, auqID, 1<<20); !a || !d {
+	if a, d := auqAnsweredInJSONLWindow(answered, auqID, 1<<20, false); !a || !d {
 		t.Errorf("answered: got (%v,%v), want (true,true)", a, d)
 	}
 
 	// 2. id present WITHOUT a tool_result, whole file within window → pending.
 	pending := write("pending.jsonl",
 		`{"tool_use_id":"`+auqID+`","name":"AskUserQuestion"}`+"\n")
-	if a, d := auqAnsweredInJSONLWindow(pending, auqID, 1<<20); a || d {
+	if a, d := auqAnsweredInJSONLWindow(pending, auqID, 1<<20, false); a || d {
 		t.Errorf("pending: got (%v,%v), want (false,false)", a, d)
 	}
 
-	// 3. id buried BEFORE a tiny window in a file larger than the window →
-	//    treated as answered (the Claw repro). The id sits at the head; with a
-	//    16-byte window only the tail is scanned, so it is absent from the scan
-	//    yet size > window → (false, true).
+	// 3. id buried BEFORE a tiny window in a file larger than the window, process
+	//    NOT waiting → cheap shortcut treats it as answered (the Claw repro). The
+	//    id sits at the head; with a 16-byte window only the tail is scanned, so
+	//    it is absent from the scan yet size > window → (false, true).
 	buried := write("buried.jsonl",
 		`{"tool_use_id":"`+auqID+`"}`+"\n"+strings.Repeat("x", 4096)+"\n")
-	if a, d := auqAnsweredInJSONLWindow(buried, auqID, 16); a || !d {
-		t.Errorf("buried: got (%v,%v), want (false,true)", a, d)
+	if a, d := auqAnsweredInJSONLWindow(buried, auqID, 16, false); a || !d {
+		t.Errorf("buried (not waiting): got (%v,%v), want (false,true)", a, d)
+	}
+
+	// 4. Process IS waiting and the id is absent from the whole transcript (a
+	//    just-shown AUQ not yet flushed). The buried shortcut must NOT fire: scan
+	//    finds no tool_result → genuinely pending (false, false). This is the
+	//    capcut / post-restart bug the hardening fixes.
+	freshWaiting := write("fresh_waiting.jsonl",
+		strings.Repeat("x", 4096)+"\n") // large file, id appears nowhere
+	if a, d := auqAnsweredInJSONLWindow(freshWaiting, auqID, 16, true); a || d {
+		t.Errorf("fresh while waiting: got (%v,%v), want (false,false)", a, d)
+	}
+
+	// 5. Process IS waiting but the AUQ really was answered earlier (a real
+	//    tool_result for the id sits before the window). The deeper scan must
+	//    find it → answered (true, true), so a genuinely-resolved AUQ is not
+	//    resurrected as a phantom while the process waits on something else.
+	answeredWaiting := write("answered_waiting.jsonl",
+		`{"tool_use_id":"`+auqID+`","type":"tool_result"}`+"\n"+strings.Repeat("x", 4096)+"\n")
+	if a, d := auqAnsweredInJSONLWindow(answeredWaiting, auqID, 16, true); !a || !d {
+		t.Errorf("answered while waiting: got (%v,%v), want (true,true)", a, d)
 	}
 }
 
