@@ -191,8 +191,11 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		}
 	}
 
-	// Fallback AUQ from hooks when the PID file didn't flag waiting.
-	if auq == nil && eligible && agentID != "" {
+	// Fallback AUQ from hooks when the screen path didn't resolve one. Skip it
+	// when the screen already showed a genuine approval/plan prompt: the process
+	// is then blocked on THAT, not an AUQ, so an older (already-answered) AUQ
+	// from the hook file must not be resurrected on top of it.
+	if auq == nil && approve == nil && !planViaScreen && eligible && agentID != "" {
 		if pending, ok := claudestat.PendingAUQFromHooks(agentID, s.Cwd, pidWaiting); ok {
 			auq = pending
 		}

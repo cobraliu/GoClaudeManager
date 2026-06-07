@@ -771,7 +771,7 @@ func auqAnsweredInJSONLWindow(jsonlPath, auqID string, window int64, procWaiting
 		if !procWaiting {
 			return false, true
 		}
-		if scanForResultBefore(jsonlPath, off, []byte(auqID), resultMark) {
+		if jsonlHasResultForID(jsonlPath, []byte(auqID), resultMark) {
 			return true, true
 		}
 		return false, false
@@ -780,23 +780,17 @@ func auqAnsweredInJSONLWindow(jsonlPath, auqID string, window int64, procWaiting
 	return false, false
 }
 
-// scanForResultBefore reads the first `limit` bytes of the file and reports
-// whether any line contains both the AUQ id and a tool_result marker — i.e. the
-// AUQ was answered earlier in the transcript. Used only on the rare blocked-
-// waiting path, so the cost (one read of the pre-window region) is bounded to
-// sessions actually paused on an input prompt.
-func scanForResultBefore(jsonlPath string, limit int64, needle, resultMark []byte) bool {
-	if limit <= 0 {
-		return false
-	}
-	f, err := os.Open(jsonlPath)
+// jsonlHasResultForID scans the WHOLE transcript and reports whether any line
+// contains both the AUQ id and a tool_result marker — i.e. the AUQ was answered.
+// Scanning the entire file (not just the pre-window region) avoids missing a
+// result line that straddles the tail-window boundary. Used only on the rare
+// blocked-waiting path, so the one-time full read is acceptable.
+func jsonlHasResultForID(jsonlPath string, needle, resultMark []byte) bool {
+	b, err := os.ReadFile(jsonlPath)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
-	buf := make([]byte, limit)
-	n, _ := readFull(f, buf)
-	for _, raw := range splitBytesNL(buf[:n]) {
+	for _, raw := range splitBytesNL(b) {
 		if containsBytes(raw, needle) && containsBytes(raw, resultMark) {
 			return true
 		}
