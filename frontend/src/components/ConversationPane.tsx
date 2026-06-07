@@ -1932,11 +1932,15 @@ function PlanApprovalBlock({ blockId, planText, planPath, options, onSubmit }: {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers }: {
+function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers, maxHeight }: {
   sessionId: string;
   blockId: string;
   questions: AskQuestion[];
   onSubmitAnswers: (answers: unknown[]) => void;
+  // Cap for the whole card; the question body scrolls within it. Defaults to a
+  // viewport-based limit, but the pinned mobile usage passes half the chat
+  // pane's measured height so it can never bury the chat history behind it.
+  maxHeight?: string | number;
 }) {
   const total = questions.length;
   // step: which question we're on (wizard mode for multi-question)
@@ -2059,7 +2063,7 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers }
       // so cap the card and let the question body scroll internally while the
       // header and action row stay visible.
       display: "flex", flexDirection: "column",
-      maxHeight: "min(60vh, 640px)",
+      maxHeight: maxHeight ?? "min(60vh, 640px)",
     }}>
       {/* Header bar */}
       <div style={{
@@ -4014,6 +4018,8 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const wsRef = useRef<WsClient | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Live height of the chat pane, used to cap the pinned AUQ at half of it.
+  const [paneHeight, setPaneHeight] = useState(0);
   const stickToBottom = useRef(true);
   const loadMoreAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -4021,6 +4027,15 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const historyButtonRef = useRef<HTMLButtonElement>(null);
   const paneContainerRef = useRef<HTMLDivElement>(null);
+  // Track the chat pane's height so the pinned AUQ can be capped at half of it.
+  useEffect(() => {
+    const el = paneContainerRef.current;
+    if (!el) return;
+    setPaneHeight(el.clientHeight);
+    const ro = new ResizeObserver(() => setPaneHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [historyPopover, setHistoryPopover] = useState<{ rect: DOMRect | null; container: DOMRect | null } | null>(null);
   const seenCompactUuidsRef = useRef<Set<string>>(new Set());
   // Signature of the last fetched window — lets the 1.5s poll skip setMessages
@@ -5409,6 +5424,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
             sessionId={sessionId}
             blockId={stickyAuq.blockId}
             questions={stickyAuq.questions}
+            maxHeight={paneHeight > 0 ? Math.round(paneHeight / 2) : undefined}
             onSubmitAnswers={(answers) => {
               if (isCodexAppServer) {
                 // codex expects {answers: {<qid>: {answers: [<str>, ...]}}};
