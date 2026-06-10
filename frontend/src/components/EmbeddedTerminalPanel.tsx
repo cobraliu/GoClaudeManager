@@ -290,9 +290,14 @@ export function EmbeddedTerminalPanel({
     return () => clearInterval(id);
   }, [open, instanceKey, api, attached]);
 
-  // Periodic list refresh (mostly to update attach_count badges)
+  // List refresh: once immediately on open, then periodically (badges etc.).
+  // The immediate call is what populates the picker right away — the auto-open
+  // effect's own list fetch races its `cancelled` flag (setAttached re-runs the
+  // effect, cancelling the in-flight fetch), so without this the pinned list
+  // stayed empty until the first poll tick.
   useEffect(() => {
     if (!open || !instanceKey) return;
+    refreshList();
     const id = setInterval(refreshList, POLL_MS);
     return () => clearInterval(id);
   }, [open, instanceKey, refreshList]);
