@@ -452,3 +452,65 @@ func TestAUQScreenMatchesHook(t *testing.T) {
 		t.Errorf("empty screen question must not match")
 	}
 }
+
+func TestIsModelSwitchDialog(t *testing.T) {
+	// Verbatim shape of the live dialog captured from a stuck session
+	// (claude-loki-pgBackup, Claude Code 2.1.170).
+	switchDialog := `  - max_wal_senders >= 2 → ✅ 不用动
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Switch model?
+   Your next response will be slower and use more tokens
+
+   This conversation is cached for the current model. Switching to Fable 5 means the full history gets re-read on your next message.
+
+   ❯ 1. Yes, switch to Fable 5
+     2. No, go back
+`
+	if !IsModelSwitchDialog(switchDialog) {
+		t.Errorf("live Switch model? dialog must be detected")
+	}
+
+	defaultDialog := `   Set model to Fable 5?
+
+   ❯ 1. Yes, for this session only
+     2. Yes, and save as your default for new sessions
+`
+	if !IsModelSwitchDialog(defaultDialog) {
+		t.Errorf("Set model to… default-scope dialog must be detected")
+	}
+
+	effortDialog := "   Change effort level?\n\n   ❯ 1. Yes, switch to high\n     2. No, go back\n"
+	if !IsModelSwitchDialog(effortDialog) {
+		t.Errorf("Change effort level? dialog must be detected")
+	}
+
+	// Cursor moved off option 1 → someone is interacting; keep hands off.
+	navigated := "   Switch model?\n\n     1. Yes, switch to Fable 5\n   ❯ 2. No, go back\n"
+	if IsModelSwitchDialog(navigated) {
+		t.Errorf("dialog with cursor on option 2 must NOT auto-confirm")
+	}
+
+	// Genuine tool approval with a highlighted Yes but no model header.
+	approval := `  Claude wants to use Bash
+
+  rm -rf build/
+
+  ❯ 1. Yes
+    2. Yes, and don't ask again
+    3. No (esc)
+`
+	if IsModelSwitchDialog(approval) {
+		t.Errorf("tool approval prompt must NOT be detected as model dialog")
+	}
+
+	// Stale "Set model to" chat text far above an unrelated menu at the bottom.
+	stale := "  Set model to Fable 5 succeeded earlier\n" + strings.Repeat("  …chat…\n", 20) +
+		"  Claude wants to use Bash\n  ❯ 1. Yes\n    2. No\n"
+	if IsModelSwitchDialog(stale) {
+		t.Errorf("model text far from the menu must NOT combine into a false positive")
+	}
+
+	if IsModelSwitchDialog("") {
+		t.Errorf("empty screen must not match")
+	}
+}

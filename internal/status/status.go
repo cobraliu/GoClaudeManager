@@ -49,6 +49,13 @@ type Manager struct {
 
 	mu   sync.RWMutex
 	snap map[string]Computed
+
+	// lastAutoConfirm rate-limits the model-switch dialog auto-confirm per
+	// session: Compute also runs inline on snapshot misses, so two concurrent
+	// calls could otherwise both press Enter — and the second Enter would land
+	// on whatever the TUI renders next.
+	autoMu          sync.Mutex
+	lastAutoConfirm map[string]time.Time
 }
 
 // sessionLister is the subset of the store this package needs.
@@ -58,7 +65,8 @@ type sessionLister interface {
 
 // NewManager builds a status Manager.
 func NewManager(store sessionLister, tx *tmux.Client, jc *jsonl.Cache) *Manager {
-	return &Manager{store: store, tmux: tx, jsonl: jc, snap: map[string]Computed{}}
+	return &Manager{store: store, tmux: tx, jsonl: jc, snap: map[string]Computed{},
+		lastAutoConfirm: map[string]time.Time{}}
 }
 
 // Get returns the cached status for a session, if present.
@@ -128,6 +136,7 @@ func (m *Manager) Compute(s *model.Session) Computed {
 
 	var auq, approve, planData map[string]any
 	planViaScreen := false
+	dialogAutoConfirmed := false
 
 	var waitingFor, hintType string
 	pidWaiting := false
@@ -154,6 +163,17 @@ func (m *Manager) Compute(s *model.Session) Computed {
 			}
 		case "approve":
 			if screen := m.tmux.CaptureVisibleScreen(s.TmuxSessionName); screen != "" {
+				if claudestat.IsModelSwitchDialog(screen) {
+					// The "Switch model?" / "Set model to…" confirmation dialog
+					// (waitingFor "dialog open" also lands here). It blocks the
+					// session after the manager sends "/model X" or at startup,
+					// and nothing in the web UI can answer it — so press Enter
+					// to accept the highlighted default (Yes / this-session-only)
+					// and surface no card or hint for this poll.
+					m.autoConfirmModelDialog(s)
+					dialogAutoConfirmed = true
+					break
+				}
 				// Recognize a plan-approval menu structurally (ParsePlanMenu —
 				// the same robust matcher the submit path uses), NOT via a
 				// brittle header string like "Claude has written up a plan"
@@ -213,7 +233,7 @@ func (m *Manager) Compute(s *model.Session) Computed {
 	if auq != nil && !pidWaiting {
 		h := "Claude is asking a question — answer in Chat or switch to TUI"
 		hint = &h
-	} else if pidWaiting {
+	} else if pidWaiting && !dialogAutoConfirmed {
 		h := claudestat.FormatTUIHint(waitingFor, hintType)
 		hint = &h
 	}
@@ -260,6 +280,29 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		TuiPlanPending:     planPending,
 		TuiPlanData:        planData,
 	}
+}
+
+// autoConfirmModelDialog presses Enter in the session's pane to accept the
+// highlighted default option of a model-switch dialog. Rate-limited per
+// session: the dialog needs ~1s to clear after Enter and Compute can run
+// concurrently (refresh loop + inline snapshot misses), so without the
+// limiter a second Enter could fire and land on whatever renders next.
+func (m *Manager) autoConfirmModelDialog(s *model.Session) {
+	now := time.Now()
+	m.autoMu.Lock()
+	if now.Sub(m.lastAutoConfirm[s.ID]) < 5*time.Second {
+		m.autoMu.Unlock()
+		return
+	}
+	m.lastAutoConfirm[s.ID] = now
+	m.autoMu.Unlock()
+	if _, err := m.tmux.Run("send-keys", "-t", s.TmuxSessionName, "Enter"); err != nil {
+		slog.Warn("status: model dialog auto-confirm failed",
+			"session", s.ID, "tmux", s.TmuxSessionName, "err", err)
+		return
+	}
+	slog.Info("status: auto-confirmed model-switch dialog",
+		"session", s.ID, "tmux", s.TmuxSessionName)
 }
 
 // computeSDK builds Computed for an sdk-transport session from the pump state.

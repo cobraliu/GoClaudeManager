@@ -302,6 +302,59 @@ func ParsePlanMenu(screen string) (opts []PlanMenuOption, highlightedIdx int, ok
 	return opts, highlightedIdx, true
 }
 
+// ── Model-switch dialog detection ──────────────────────────────────────────
+
+// modelDialogHeaders are the titles of Claude Code's model_switch dialog
+// family. These dialogs block the whole session (PID file: status="waiting",
+// waitingFor="dialog open") after the manager sends "/model X" or at startup,
+// and their highlighted default option is always the harmless choice
+// ("Yes, switch to X" / "Yes, for this session only"), so the manager
+// auto-confirms them instead of surfacing a bogus approval card.
+var modelDialogHeaders = []string{
+	"Switch model?",        // /model on a cached conversation: ❯ 1. Yes, switch to X / 2. No, go back
+	"Change effort level?", // same dialog component, effort-level variant
+	"Set model to",         // session-only vs save-as-default question
+}
+
+// modelDialogOptRE matches the dialog's first option row with the selection
+// cursor on it. Auto-confirm only fires in this state — if the cursor has been
+// moved off option 1 (someone is interacting in the TUI), we keep hands off.
+var modelDialogOptRE = regexp.MustCompile(`❯\s*1\.`)
+
+// modelDialogOptWindow is how many lines below the dialog title the
+// highlighted "❯ 1." row must appear. The title and its options are adjacent
+// (explanation text in between); requiring proximity prevents a stale
+// "Set model to…" status line in the transcript area from combining with an
+// unrelated numbered menu at the bottom into a false positive.
+const modelDialogOptWindow = 12
+
+// IsModelSwitchDialog reports whether the captured screen shows one of Claude
+// Code's model/effort confirmation dialogs with the first option highlighted.
+func IsModelSwitchDialog(screen string) bool {
+	if screen == "" {
+		return false
+	}
+	lines := strings.Split(ansiRE.ReplaceAllString(screen, ""), "\n")
+	headIdx := -1
+	for i, ln := range lines {
+		for _, h := range modelDialogHeaders {
+			if strings.Contains(ln, h) {
+				headIdx = i // keep the LAST occurrence — the live dialog renders at the bottom
+				break
+			}
+		}
+	}
+	if headIdx < 0 {
+		return false
+	}
+	for i := headIdx + 1; i < len(lines) && i <= headIdx+modelDialogOptWindow; i++ {
+		if modelDialogOptRE.MatchString(lines[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // ── PID waiting state ──────────────────────────────────────────────────────
 
 // pidSession is the subset of ~/.claude/sessions/{pid}.json we read.
