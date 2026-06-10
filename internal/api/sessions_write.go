@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -294,11 +295,33 @@ func resumeSession(d Deps, w http.ResponseWriter, r *http.Request) {
 	ts := time.Now().Unix()
 	tmuxName := "claude-" + s.OwnerID + "-" + s.Project + "-" + itoa(ts)
 	// Resume targets the session's OWN captured agent_session_id and never
-	// reassigns it: the link established at create time is authoritative and must
-	// stay pinned across resume. We pass the stored id as-is — we do NOT borrow
-	// the newest transcript in the cwd, which in a shared directory would belong
-	// to a sibling session and corrupt this session's linkage.
+	// reassigns it while valid: the link established at create time is
+	// authoritative. We do NOT borrow the newest transcript in the cwd, which in
+	// a shared directory would belong to a sibling session and corrupt this
+	// session's linkage.
+	//
+	// But `claude --resume <id>` hard-exits when the id's transcript no longer
+	// exists on disk (Claude rotates session ids on compaction/resume and prunes
+	// old files) — the pane dies instantly ("[exited] / Session terminated") and
+	// the session becomes permanently unresumable. So validate the pinned id
+	// first; when its file is gone, recover through the same fallback the chat
+	// reader uses (resolveChatSID: own rotated transcript only, ids owned by
+	// other sessions excluded) and heal the stored link. If nothing usable
+	// exists anywhere, resume fresh instead of spawning a pane that only dies.
+	// Codex transcripts are not visible to this resolver — pass codex ids as-is.
 	resume := agentSessionID(s)
+	if resume != "" && s.Tool != "codex" && resolveJSONLPath(s.Tool, resume, s.Cwd) == "" {
+		recovered := resolveChatSID(d, s)
+		if recovered != "" && resolveJSONLPath(s.Tool, recovered, s.Cwd) == "" {
+			recovered = ""
+		}
+		slog.Warn("resume: stored agent_session_id has no transcript on disk",
+			"session", s.ID, "stored", resume, "recovered", recovered)
+		resume = recovered
+		if recovered != "" {
+			_ = d.Store.UpdateAgentSessionID(s.ID, recovered)
+		}
+	}
 	model_ := ""
 	if s.Model != nil {
 		model_ = *s.Model
