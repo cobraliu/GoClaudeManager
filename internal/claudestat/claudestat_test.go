@@ -347,3 +347,108 @@ func TestParsePlanMenu_IgnoresPlanBodyNumberedLists(t *testing.T) {
 		t.Fatalf("no-prompt: expected 4 options, got %d: %+v", len(opts), opts)
 	}
 }
+
+// ── PendingAUQFromHooks lifecycle-event tests ───────────────────────────────
+
+// writeHookFile installs a fake HOME and writes the given lines as the
+// per-session hook file for sid. Returns nothing; claudestat reads via $HOME.
+func writeHookFile(t *testing.T, sid string, lines ...string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := home + "/.claude_manager/hooks"
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(dir+"/"+sid+".jsonl", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const (
+	hookPreAUQ = `{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"toolu_AUQ1","tool_input":{"questions":[{"question":"选择下一步要做什么?","options":[{"label":"A"}]}]}}`
+	hookPost   = `{"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion","tool_use_id":"toolu_AUQ1"}`
+	hookPrompt = `{"hook_event_name":"UserPromptSubmit","session_id":"s1"}`
+)
+
+func TestPendingAUQFromHooks_LifecycleEvents(t *testing.T) {
+	const sid = "lifecycle-sid"
+
+	// 1. Pre only + pid waiting → pending (the live-AUQ case; no transcript
+	//    exists under the fake HOME so the layer-3 scan is skipped).
+	writeHookFile(t, sid, hookPreAUQ)
+	if got, ok := PendingAUQFromHooks(sid, "/tmp", true, true); !ok || got == nil {
+		t.Errorf("pre-only while waiting: want pending, got ok=%v", ok)
+	}
+
+	// 2. Pre + matching PostToolUse → answered, even while the process waits
+	//    on something else (e.g. the next tool's permission prompt).
+	writeHookFile(t, sid, hookPreAUQ, hookPost)
+	if _, ok := PendingAUQFromHooks(sid, "/tmp", true, true); ok {
+		t.Errorf("post event: want resolved, got pending")
+	}
+
+	// 3. Pre + later UserPromptSubmit (Esc-cancel then new prompt) → resolved.
+	writeHookFile(t, sid, hookPreAUQ, hookPrompt)
+	if _, ok := PendingAUQFromHooks(sid, "/tmp", true, true); ok {
+		t.Errorf("prompt-submit event: want resolved, got pending")
+	}
+
+	// 4. Pre only, pid known and NOT waiting → the process is running, so the
+	//    AUQ cannot be pending (kills the post-answer flush-gap re-show).
+	writeHookFile(t, sid, hookPreAUQ)
+	if _, ok := PendingAUQFromHooks(sid, "/tmp", true, false); ok {
+		t.Errorf("pid running: want resolved, got pending")
+	}
+
+	// 5. Pre only, pid state unobservable → legacy behavior keeps it pending
+	//    (no transcript to consult under the fake HOME).
+	writeHookFile(t, sid, hookPreAUQ)
+	if _, ok := PendingAUQFromHooks(sid, "/tmp", false, false); !ok {
+		t.Errorf("pid unknown: want pending (legacy), got resolved")
+	}
+
+	// 6. A Post for an OLDER AUQ must not resolve a NEWER question asked after
+	//    it (id-matched resolution).
+	pre2 := strings.ReplaceAll(hookPreAUQ, "toolu_AUQ1", "toolu_AUQ2")
+	writeHookFile(t, sid, hookPreAUQ, hookPost, pre2)
+	if got, ok := PendingAUQFromHooks(sid, "/tmp", true, true); !ok || got == nil {
+		t.Errorf("newer AUQ after old post: want pending, got ok=%v", ok)
+	}
+}
+
+// TestReadSessionHooks_IgnoresLifecycleEvents guards against a PostToolUse
+// line (which carries tool_name=AskUserQuestion) being misread as a fresh AUQ
+// payload by the screen-path hook reader.
+func TestReadSessionHooks_IgnoresLifecycleEvents(t *testing.T) {
+	const sid = "filter-sid"
+	writeHookFile(t, sid, hookPreAUQ, hookPost, hookPrompt)
+	auq, approve := ReadSessionHooks(sid)
+	if auq == nil {
+		t.Fatalf("want the PreToolUse AUQ payload, got nil")
+	}
+	if approve != nil {
+		t.Errorf("lifecycle events must not produce an approval payload, got %v", approve)
+	}
+}
+
+func TestAUQScreenMatchesHook(t *testing.T) {
+	hook := map[string]any{
+		"questions": []any{map[string]any{
+			"question": "**重要**:选择下一步要做什么?这个问题很长会在终端里折行显示后面还有更多内容",
+		}},
+	}
+	// Screen shows only the first rendered line, markdown stripped.
+	screen := map[string]any{"question": "重要:选择下一步要做什么?这个问题很长会在终端里折行"}
+	if !AUQScreenMatchesHook(screen, hook) {
+		t.Errorf("truncated+markdown-stripped screen text should match hook payload")
+	}
+	other := map[string]any{"question": "完全不同的另一个问题"}
+	if AUQScreenMatchesHook(other, hook) {
+		t.Errorf("unrelated question must not match")
+	}
+	if AUQScreenMatchesHook(map[string]any{"question": ""}, hook) {
+		t.Errorf("empty screen question must not match")
+	}
+}

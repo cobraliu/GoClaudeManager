@@ -1255,15 +1255,31 @@ function _nsKey(sessionId: string, key: string): string {
 function _markAuqDismissed(sessionId: string, question: string) {
   _recentlyDismissedAuqQ.set(_nsKey(sessionId, question), Date.now());
 }
+// The same AUQ can surface with different question text depending on the
+// source: the backend screen parser captures only the first rendered terminal
+// line, and Ink strips markdown markers — while hook/JSONL carry the full raw
+// text. Normalize both and treat a prefix relation (either direction) as the
+// same question, so answering one variant suppresses the others.
+function _auqNormText(s: string): string {
+  return s.replace(/[*`_#]/g, "").replace(/\s+/g, " ").trim();
+}
+function _auqSameQuestion(a: string, b: string): boolean {
+  const na = _auqNormText(a), nb = _auqNormText(b);
+  if (!na || !nb) return false;
+  return na.startsWith(nb) || nb.startsWith(na);
+}
 function _isAuqRecentlyDismissed(sessionId: string, question: string): boolean {
-  const k = _nsKey(sessionId, question);
-  const t = _recentlyDismissedAuqQ.get(k);
-  if (!t) return false;
-  if (Date.now() - t > _AUQ_SUPPRESS_MS) {
-    _recentlyDismissedAuqQ.delete(k);
-    return false;
+  const now = Date.now();
+  const prefix = _nsKey(sessionId, "");
+  for (const [k, t] of _recentlyDismissedAuqQ) {
+    if (now - t > _AUQ_SUPPRESS_MS) {
+      _recentlyDismissedAuqQ.delete(k);
+      continue;
+    }
+    if (!k.startsWith(prefix)) continue;
+    if (_auqSameQuestion(k.slice(prefix.length), question)) return true;
   }
-  return true;
+  return false;
 }
 function _isAuqBlockDismissed(sessionId: string, blockId: string): boolean {
   return _dismissedAUQ.has(_nsKey(sessionId, blockId));
@@ -4201,8 +4217,10 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
       if (!prev) return currentAuq;
       // Same question → keep, but upgrade pending-blockId to JSONL-blockId
       // once JSONL catches up (real blockId is needed for dedup against the
-      // inline render path).
-      if (prev.key === currentAuq.key) {
+      // inline render path). Prefix-tolerant: the screen-parsed variant holds
+      // only the question's first rendered line, so a source switch
+      // (screen → hook/JSONL) must not be mistaken for a new question.
+      if (prev.key === currentAuq.key || _auqSameQuestion(prev.key, currentAuq.key)) {
         if (prev.blockId.startsWith("__pending_auq__:") && !currentAuq.blockId.startsWith("__pending_auq__:")) {
           return { ...prev, blockId: currentAuq.blockId };
         }

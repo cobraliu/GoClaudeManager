@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -348,6 +349,32 @@ func GetPIDWaitingState(pid int) (waitingFor string, hintType string, ok bool) {
 	return data.WaitingFor, "approve", true
 }
 
+// PIDStateKnown reports whether the Claude CLI process's state file
+// (~/.claude/sessions/{pid}.json) exists and parses with a status field.
+// When it does, a non-"waiting" status is positive evidence the process is
+// running — and a running process cannot have an unanswered (blocking)
+// AskUserQuestion. Callers use this to distinguish "definitely not waiting"
+// from "state unobservable".
+func PIDStateKnown(pid int) bool {
+	if pid == 0 {
+		return false
+	}
+	home, hok := homeDir()
+	if !hok {
+		return false
+	}
+	sf := filepath.Join(home, ".claude", "sessions", strconv.Itoa(pid)+".json")
+	b, err := os.ReadFile(sf)
+	if err != nil {
+		return false
+	}
+	var data pidSession
+	if err := json.Unmarshal(b, &data); err != nil {
+		return false
+	}
+	return data.Status != ""
+}
+
 // FormatTUIHint returns a human-readable hint describing what Claude is waiting
 // for.
 func FormatTUIHint(waitingFor, hintType string) string {
@@ -416,9 +443,18 @@ func readHookTail(home, claudeSessionID string) ([]string, bool) {
 
 // hookEntry is the parsed shape of a single per-session hook line.
 type hookEntry struct {
-	ToolName  string         `json:"tool_name"`
-	ToolUseID string         `json:"tool_use_id"`
-	ToolInput map[string]any `json:"tool_input"`
+	HookEventName string         `json:"hook_event_name"`
+	ToolName      string         `json:"tool_name"`
+	ToolUseID     string         `json:"tool_use_id"`
+	ToolInput     map[string]any `json:"tool_input"`
+}
+
+// isPreToolUseEntry reports whether a hook line is a PreToolUse event. Lines
+// written before the hook recorded other event types carry no distinguishing
+// behavior change — they were always PreToolUse — so an empty event name is
+// treated as PreToolUse for backward compatibility.
+func isPreToolUseEntry(d hookEntry) bool {
+	return d.HookEventName == "" || d.HookEventName == "PreToolUse"
 }
 
 // ReadSessionHooks returns the most-recent AUQ and approval payloads recorded in
@@ -445,7 +481,10 @@ func ReadSessionHooksStruct(claudeSessionID string) SessionHooks {
 		if err := json.Unmarshal([]byte(line), &d); err != nil {
 			continue
 		}
-		if d.ToolName == "" {
+		// Only PreToolUse lines carry tool payloads; PostToolUse /
+		// UserPromptSubmit lifecycle markers must not be mistaken for a
+		// fresh AUQ or approval request.
+		if !isPreToolUseEntry(d) || d.ToolName == "" {
 			continue
 		}
 		if d.ToolName == "AskUserQuestion" {
@@ -654,16 +693,29 @@ func CompactingFromScreen(tuiScreen string) (progress string, compacting bool) {
 // PendingAUQFromHooks returns the latest unanswered AUQ tool_input from the
 // per-session hook file, or (nil, false).
 //
-// Logic (mirrors the Python _pending_auq_from_hooks):
-//  1. Find the most recent AUQ entry in the per-session hook file.
-//  2. Check the session JSONL — if the AUQ's tool_use_id already has a
-//     corresponding tool_result, the user has answered → return (nil, false).
-//  3. Otherwise it is pending; return its tool_input.
+// Resolution layers, strongest signal first:
 //
-// procWaiting tells whether the Claude process is currently blocked waiting for
-// input (from the PID session file). It only affects the ambiguous "id absent
-// from the tail of a large transcript" case — see auqAnsweredInJSONLWindow.
-func PendingAUQFromHooks(claudeSessionID, cwd string, procWaiting bool) (map[string]any, bool) {
+//  1. Hook lifecycle events. The hook script also records
+//     PostToolUse(AskUserQuestion) — written by Claude Code the moment the
+//     user submits an answer — and UserPromptSubmit (a fresh prompt, which
+//     means any older AUQ was answered or Esc-cancelled). An event newer than
+//     the AUQ's PreToolUse line resolves it authoritatively: no transcript
+//     flush lag, no screen parsing, survives manager restarts.
+//  2. PID state. Hook registrations are snapshotted when the Claude CLI
+//     starts, so sessions launched before the lifecycle hooks were registered
+//     never emit them. For those, a readable PID file with status !=
+//     "waiting" proves the process is running — impossible with an unanswered
+//     blocking AUQ — so the AUQ is resolved. This also kills the post-answer
+//     re-show window: the moment Claude resumes, the AUQ stops surfacing even
+//     though its tool_use/tool_result lines haven't been flushed to the
+//     transcript yet.
+//  3. Transcript scan, only when neither signal is available (no lifecycle
+//     events and PID state unobservable) or to suppress a long-answered AUQ
+//     while the process waits on something else — see auqAnsweredInJSONL.
+//
+// pidKnown reports whether the PID state file was readable; pidWaiting whether
+// it shows status == "waiting".
+func PendingAUQFromHooks(claudeSessionID, cwd string, pidKnown, pidWaiting bool) (map[string]any, bool) {
 	home, ok := homeDir()
 	if !ok {
 		return nil, false
@@ -675,38 +727,113 @@ func PendingAUQFromHooks(claudeSessionID, cwd string, procWaiting bool) (map[str
 
 	var latestAUQID string
 	var latestAUQInput map[string]any
-	// Iterate newest-first.
+	resolvedByEvent := false
+	postIDs := map[string]bool{}
+	anonPost := false // PostToolUse(AUQ) line without a tool_use_id
+	// Iterate newest-first; lifecycle events encountered before the AUQ's
+	// PreToolUse line are newer than it.
+scan:
 	for i := len(tail) - 1; i >= 0; i-- {
 		var d hookEntry
 		if err := json.Unmarshal([]byte(tail[i]), &d); err != nil {
 			continue
 		}
-		if d.ToolName == "AskUserQuestion" {
+		switch {
+		case d.HookEventName == "UserPromptSubmit":
+			// A prompt was submitted after any older AUQ — whether it was
+			// answered or Esc-cancelled, it is no longer on screen.
+			return nil, false
+		case d.HookEventName == "PostToolUse":
+			if d.ToolName == "AskUserQuestion" {
+				if d.ToolUseID != "" {
+					postIDs[d.ToolUseID] = true
+				} else {
+					anonPost = true
+				}
+			}
+		case isPreToolUseEntry(d) && d.ToolName == "AskUserQuestion":
 			latestAUQID = d.ToolUseID
 			latestAUQInput = d.ToolInput
-			break
+			resolvedByEvent = postIDs[latestAUQID] || anonPost
+			break scan
 		}
 	}
 
 	if latestAUQID == "" || latestAUQInput == nil {
 		return nil, false
 	}
+	if resolvedByEvent {
+		return nil, false
+	}
 
-	// Check whether this AUQ was already answered (tool_result in JSONL).
-	// A `decided` verdict means the AUQ's fate is known and it is NOT pending:
-	// either a tool_result was found (answered), or the id is buried before the
-	// scan window in a file larger than the window — asked long ago, so Claude
-	// has produced megabytes of transcript since and it is necessarily resolved.
-	// Only (decided == false) — a recent id with no result yet, or a small file
-	// with no id at all — leaves the AUQ genuinely pending.
+	// No lifecycle event resolved it; fall back to process state (layer 2).
+	if pidKnown && !pidWaiting {
+		return nil, false
+	}
+
+	// Layer 3: transcript scan. A `decided` verdict means the AUQ is NOT
+	// pending — either a tool_result was found (answered), or (when the PID
+	// state is unobservable) the id is buried before the scan window of a
+	// large transcript, i.e. asked & resolved long ago. With pidWaiting ==
+	// true the scan is conservative: only a real tool_result suppresses, so a
+	// live just-asked AUQ whose lines haven't been flushed yet still surfaces.
 	jsonlPath := FindSessionJSONL(claudeSessionID, cwd)
 	if jsonlPath != "" {
-		if _, decided := auqAnsweredInJSONL(jsonlPath, latestAUQID, procWaiting); decided {
+		if _, decided := auqAnsweredInJSONL(jsonlPath, latestAUQID, pidWaiting); decided {
 			return nil, false
 		}
 	}
 
 	return latestAUQInput, true
+}
+
+// AUQScreenMatchesHook reports whether a screen-parsed AUQ and a hook-recorded
+// AskUserQuestion tool_input describe the same question. The screen parser
+// captures only the first rendered line of the question, and Ink renders
+// markdown (so **emphasis** markers are absent on screen) — compare
+// markdown-stripped, whitespace-collapsed text by prefix in either direction.
+func AUQScreenMatchesHook(screenAUQ, hookAUQ map[string]any) bool {
+	sq, _ := screenAUQ["question"].(string)
+	a := normalizeAUQText(sq)
+	b := normalizeAUQText(hookAUQQuestion(hookAUQ))
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.HasPrefix(b, a) || strings.HasPrefix(a, b)
+}
+
+// hookAUQQuestion extracts questions[0].question from an AskUserQuestion
+// tool_input payload.
+func hookAUQQuestion(input map[string]any) string {
+	qs, _ := input["questions"].([]any)
+	if len(qs) == 0 {
+		return ""
+	}
+	q0, _ := qs[0].(map[string]any)
+	s, _ := q0["question"].(string)
+	return s
+}
+
+// normalizeAUQText strips markdown emphasis/code markers and collapses runs of
+// whitespace so terminal-rendered text compares against raw tool input.
+func normalizeAUQText(s string) string {
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range s {
+		switch {
+		case r == '*' || r == '`' || r == '_' || r == '#':
+			continue
+		case unicode.IsSpace(r):
+			if !lastSpace && b.Len() > 0 {
+				b.WriteRune(' ')
+				lastSpace = true
+			}
+		default:
+			b.WriteRune(r)
+			lastSpace = false
+		}
+	}
+	return strings.TrimRight(b.String(), " ")
 }
 
 // auqAnsweredInJSONL scans the tail window of the session JSONL for the AUQ

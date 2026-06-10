@@ -131,8 +131,10 @@ func (m *Manager) Compute(s *model.Session) Computed {
 
 	var waitingFor, hintType string
 	pidWaiting := false
+	pidKnown := false
 	if eligible && s.ClaudeProcPID != nil {
 		waitingFor, hintType, pidWaiting = claudestat.GetPIDWaitingState(*s.ClaudeProcPID)
+		pidKnown = pidWaiting || claudestat.PIDStateKnown(*s.ClaudeProcPID)
 	}
 
 	if pidWaiting {
@@ -180,11 +182,16 @@ func (m *Manager) Compute(s *model.Session) Computed {
 					// approval prompts; ParseAUQFromScreen only matches a real AUQ
 					// widget (☐ header + numbered options + Type something/Chat
 					// about this), so reaching here means it's a misclassified AUQ.
-					// Surface it as AUQ and correct hintType so the hint/gating use
-					// the AUQ wording. This also avoids the hook-fallback's
-					// buried-id heuristic mis-marking a live AUQ as answered when
-					// the transcript is large and the id isn't flushed yet.
-					auq = a
+					// Prefer the hook-recorded payload when it matches the screen:
+					// the hook carries the exact original question text, while the
+					// screen parse holds only the first rendered line — and the
+					// frontend dedups answered questions by text, so all sources
+					// must agree or an already-answered AUQ re-pops after submit.
+					if hookAuq != nil && claudestat.AUQScreenMatchesHook(a, hookAuq) {
+						auq = hookAuq
+					} else {
+						auq = a
+					}
 					hintType = "auq"
 				}
 			}
@@ -196,7 +203,7 @@ func (m *Manager) Compute(s *model.Session) Computed {
 	// is then blocked on THAT, not an AUQ, so an older (already-answered) AUQ
 	// from the hook file must not be resurrected on top of it.
 	if auq == nil && approve == nil && !planViaScreen && eligible && agentID != "" {
-		if pending, ok := claudestat.PendingAUQFromHooks(agentID, s.Cwd, pidWaiting); ok {
+		if pending, ok := claudestat.PendingAUQFromHooks(agentID, s.Cwd, pidKnown, pidWaiting); ok {
 			auq = pending
 		}
 	}
