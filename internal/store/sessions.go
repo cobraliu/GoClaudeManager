@@ -7,10 +7,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/loki/goclaudemanager/internal/model"
 )
+
+// logWrite records every meaningful sessions-table mutation (which session,
+// which field, new value) so identity/lifecycle changes — agent_session_id
+// cross-links especially — are traceable from the server log alone.
+// High-frequency heartbeat fields (last_activity_at, last_output_offset, …)
+// log at Debug instead via logWriteDebug to keep Info readable.
+func logWrite(id, field string, value any) {
+	slog.Info("sessions write", "session", id, "field", field, "value", value)
+}
+
+func logWriteDebug(id, field string, value any) {
+	slog.Debug("sessions write", "session", id, "field", field, "value", value)
+}
+
+// ptrVal unwraps a nullable column value for logging (nil stays nil).
+func ptrVal[T any](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
 
 // epochToUTC converts fractional epoch seconds to a UTC time.Time.
 func epochToUTC(epoch float64) time.Time {
@@ -129,6 +151,12 @@ func (s *Store) CreateSession(m *model.Session) error {
 		m.AgentSessionID, m.GitRepoURL, m.Tool, m.CodexTransport,
 		m.CodexAppserverPID, m.CodexAppserverPort, m.Transport,
 	)
+	if err == nil {
+		slog.Info("sessions write", "session", m.ID, "field", "INSERT",
+			"name", m.Name, "project", m.Project, "tool", m.Tool,
+			"transport", m.Transport, "model", ptrVal(m.Model),
+			"agent_session_id", ptrVal(m.AgentSessionID))
+	}
 	return err
 }
 
@@ -201,6 +229,7 @@ func (s *Store) Transition(id string, newState model.SessionStatus) (*model.Sess
 	); err != nil {
 		return nil, err
 	}
+	slog.Info("sessions write", "session", id, "field", "status", "value", newState, "old", cur.Status)
 	return s.GetSession(id)
 }
 
@@ -214,6 +243,9 @@ func (s *Store) ForceStatus(id string, newState model.SessionStatus) error {
 	}
 	_, err := s.DB.Exec(`UPDATE sessions SET status = ?, updated_at = ?`+extra+` WHERE id = ?`,
 		newState, nowISO(), id)
+	if err == nil {
+		slog.Info("sessions write", "session", id, "field", "status", "value", newState, "forced", true)
+	}
 	return err
 }
 
@@ -227,6 +259,7 @@ func (s *Store) UpdateAttachedClients(id string, delta int) (*model.Session, err
 	); err != nil {
 		return nil, err
 	}
+	logWriteDebug(id, "attached_clients", fmt.Sprintf("delta %+d", delta))
 	return s.GetSession(id)
 }
 
@@ -235,6 +268,9 @@ func (s *Store) ResetAttachedClients(id string) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	_, err := s.DB.Exec(`UPDATE sessions SET attached_clients = 0, updated_at = ? WHERE id = ?`, nowISO(), id)
+	if err == nil {
+		logWrite(id, "attached_clients", 0)
+	}
 	return err
 }
 
@@ -254,43 +290,74 @@ func (s *Store) IssueWsToken(id string) (string, error) {
 	if _, err := s.DB.Exec(`UPDATE sessions SET ws_token = ?, updated_at = ? WHERE id = ?`, tok, nowISO(), id); err != nil {
 		return "", err
 	}
+	logWrite(id, "ws_token", "minted") // token value itself is a credential — not logged
 	return tok, nil
 }
 
 // Setter helpers (each a single UPDATE, mirroring the Python one-liners).
 
 func (s *Store) UpdateTmuxSessionName(id, name string) error {
-	return s.execTouch(`UPDATE sessions SET tmux_session_name = ?, updated_at = ? WHERE id = ?`, name, id)
+	err := s.execTouch(`UPDATE sessions SET tmux_session_name = ?, updated_at = ? WHERE id = ?`, name, id)
+	if err == nil {
+		logWrite(id, "tmux_session_name", name)
+	}
+	return err
 }
 func (s *Store) UpdateClaudeProcPID(id string, pid *int) error {
-	return s.execTouch(`UPDATE sessions SET claude_proc_pid = ?, updated_at = ? WHERE id = ?`, pid, id)
+	err := s.execTouch(`UPDATE sessions SET claude_proc_pid = ?, updated_at = ? WHERE id = ?`, pid, id)
+	if err == nil {
+		logWrite(id, "claude_proc_pid", ptrVal(pid))
+	}
+	return err
 }
 func (s *Store) UpdateAgentSessionID(id, agentID string) error {
-	return s.execTouch(`UPDATE sessions SET agent_session_id = ?, updated_at = ? WHERE id = ?`, agentID, id)
+	err := s.execTouch(`UPDATE sessions SET agent_session_id = ?, updated_at = ? WHERE id = ?`, agentID, id)
+	if err == nil {
+		logWrite(id, "agent_session_id", agentID)
+	}
+	return err
 }
 func (s *Store) ClearAgentSessionID(id string) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	_, err := s.DB.Exec(`UPDATE sessions SET agent_session_id = NULL, updated_at = ? WHERE id = ?`, nowISO(), id)
+	if err == nil {
+		logWrite(id, "agent_session_id", nil)
+	}
 	return err
 }
 func (s *Store) UpdateProject(id, project string) error {
-	return s.execTouch(`UPDATE sessions SET project = ?, updated_at = ? WHERE id = ?`, project, id)
+	err := s.execTouch(`UPDATE sessions SET project = ?, updated_at = ? WHERE id = ?`, project, id)
+	if err == nil {
+		logWrite(id, "project", project)
+	}
+	return err
 }
 func (s *Store) UpdateModel(id string, m *string) error {
-	return s.execTouch(`UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?`, m, id)
+	err := s.execTouch(`UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?`, m, id)
+	if err == nil {
+		logWrite(id, "model", ptrVal(m))
+	}
+	return err
 }
 func (s *Store) UpdateCodexAppserverEndpoint(id string, pid, port *int) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	_, err := s.DB.Exec(`UPDATE sessions SET codex_appserver_pid = ?, codex_appserver_port = ?, updated_at = ? WHERE id = ?`,
 		pid, port, nowISO(), id)
+	if err == nil {
+		slog.Info("sessions write", "session", id, "field", "codex_appserver_pid+port",
+			"pid", ptrVal(pid), "port", ptrVal(port))
+	}
 	return err
 }
 func (s *Store) UpdateGitMsgCount(id string, count int) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	_, err := s.DB.Exec(`UPDATE sessions SET git_commit_msg_count = ? WHERE id = ?`, count, id)
+	if err == nil {
+		logWriteDebug(id, "git_commit_msg_count", count)
+	}
 	return err
 }
 
@@ -328,6 +395,9 @@ func (s *Store) SyncOutputOffset(id string, offset int64) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	_, err := s.DB.Exec(`UPDATE sessions SET last_output_offset = ? WHERE id = ?`, offset, id)
+	if err == nil {
+		logWriteDebug(id, "last_output_offset", offset)
+	}
 	return err
 }
 
@@ -336,6 +406,9 @@ func (s *Store) UpdateActivity(id string) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	_, err := s.DB.Exec(`UPDATE sessions SET last_activity_at = ? WHERE id = ?`, nowISO(), id)
+	if err == nil {
+		logWriteDebug(id, "last_activity_at", "now")
+	}
 	return err
 }
 
@@ -348,6 +421,9 @@ func (s *Store) UpdateLastTurnAt(id string, turnEpoch float64) error {
 	_, err := s.DB.Exec(
 		`UPDATE sessions SET last_turn_at = ? WHERE id = ? AND (last_turn_at IS NULL OR last_turn_at < ?)`,
 		iso, id, iso)
+	if err == nil {
+		logWriteDebug(id, "last_turn_at", iso)
+	}
 	return err
 }
 
@@ -381,6 +457,7 @@ func (s *Store) UpdateActivityIfOffsetChanged(id string, newOffset int64) (bool,
 			nowISO(), newOffset, id); err != nil {
 			return false, err
 		}
+		logWriteDebug(id, "last_output_offset+activity", newOffset)
 		return true, tx.Commit()
 	}
 }
@@ -487,6 +564,9 @@ func (s *Store) DeleteSession(id string) (bool, error) {
 		}
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		logWrite(id, "DELETE", nil)
+	}
 	return n > 0, nil
 }
 
