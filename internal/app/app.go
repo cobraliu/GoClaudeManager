@@ -23,6 +23,7 @@ import (
 	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/status"
 	"github.com/loki/goclaudemanager/internal/store"
+	"github.com/loki/goclaudemanager/internal/sysmon"
 	"github.com/loki/goclaudemanager/internal/term"
 	"github.com/loki/goclaudemanager/internal/tmux"
 	"github.com/loki/goclaudemanager/internal/web"
@@ -41,6 +42,7 @@ type App struct {
 	Snapshot *status.Manager
 	Term     *term.Service
 	SDK      *sdktransport.Manager
+	Sysmon   *sysmon.Sampler
 }
 
 // New opens the store and assembles the application.
@@ -98,6 +100,7 @@ func New() (*App, error) {
 	a.SDK = sdktransport.New(st, env.DataDir)
 	a.Snapshot = status.NewManager(st, tmuxClient, jsonlCache)
 	a.Snapshot.SDK = a.SDK
+	a.Sysmon = sysmon.NewSampler()
 	return a, nil
 }
 
@@ -153,6 +156,7 @@ func (a *App) Handler() http.Handler {
 		Snapshot: a.Snapshot,
 		Term:     a.Term,
 		SDK:      a.SDK,
+		Sysmon:   a.Sysmon,
 	}))
 	r.Mount("/ws", ws.Router(ws.Deps{Store: a.Store, Tmux: a.Tmux, Auth: a.Auth, Env: a.Env, Term: a.Term, SDK: a.SDK}))
 
@@ -182,6 +186,7 @@ func (a *App) Server() *http.Server {
 func (a *App) Start(ctx context.Context) {
 	a.reconcileOnStartup()
 	go a.Snapshot.Run(ctx)
+	go a.Sysmon.Run(ctx)
 	go a.Term.Sweeper(ctx)
 	go a.runTaskScheduler(ctx)
 	go a.runProxyTapCleanup(ctx)

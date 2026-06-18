@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment } from "react";
 import {
   listUsers,
   createUser,
@@ -18,10 +18,12 @@ import {
   setSkipDirs,
   setClaudeModels,
   restartServer,
+  getMonitorStats,
   type UserInfo,
   type SessionMeta,
   type ProxyMode,
   type FileViewerMode,
+  type MonitorStats,
 } from "../api/sessionApi";
 import { SessionCard } from "../components/SessionCard";
 import { EmbeddedTerminalPanel, useAdminTerminalApi } from "../components/EmbeddedTerminalPanel";
@@ -45,7 +47,10 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
   const [newRole, setNewRole] = useState<"admin" | "user">("user");
   const [pwUser, setPwUser] = useState("");
   const [pwValue, setPwValue] = useState("");
-  const [tab, setTab] = useState<"sessions" | "users" | "config" | "terminal">("config");
+  const [tab, setTab] = useState<"sessions" | "users" | "config" | "terminal" | "monitoring">("config");
+  const [monitor, setMonitor] = useState<MonitorStats | null>(null);
+  const [monSort, setMonSort] = useState<"cpu" | "mem">("cpu");
+  const [monLimit, setMonLimit] = useState(20);
   const adminTerminalApi = useAdminTerminalApi();
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [msg, setMsg] = useState("");
@@ -188,6 +193,21 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
     return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
   }, [refreshUsers, refreshSessions]);
 
+  // Monitoring poll — only while the Monitor tab is active, so /proc isn't
+  // sampled when nobody is looking. Pauses when the tab is backgrounded.
+  // Re-runs (and re-fetches immediately) when the sort key or row limit change.
+  useEffect(() => {
+    if (tab !== "monitoring") return;
+    let id: ReturnType<typeof setInterval>;
+    const tick = () => getMonitorStats(monSort, monLimit).then(setMonitor).catch(() => {});
+    const start = () => { tick(); id = setInterval(tick, 2500); };
+    const stop = () => clearInterval(id);
+    const onVis = () => (document.hidden ? stop() : start());
+    start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
+  }, [tab, monSort, monLimit]);
+
   // Debounced search
   useEffect(() => {
     setPage(0);
@@ -278,6 +298,7 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
             <TabBtn active={tab === "users"} label={`Users (${users.length})`} onClick={() => setTab("users")} />
             <TabBtn active={tab === "sessions"} label={`Sessions (${sessions.length})`} onClick={() => setTab("sessions")} />
             <TabBtn active={tab === "terminal"} label="Terminal" onClick={() => setTab("terminal")} />
+            <TabBtn active={tab === "monitoring"} label="Monitor" onClick={() => setTab("monitoring")} />
           </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
@@ -943,6 +964,16 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
             </div>
           </div>
         )}
+
+        {tab === "monitoring" && (
+          <MonitorTab
+            stats={monitor}
+            sort={monSort}
+            limit={monLimit}
+            onSortChange={setMonSort}
+            onLimitChange={setMonLimit}
+          />
+        )}
       </div>
 
       <ClaudeLoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
@@ -963,6 +994,143 @@ function PgBtn({ disabled, onClick, label }: { disabled: boolean; onClick: () =>
     <button disabled={disabled} onClick={onClick} style={{ background: "var(--text-faintest)", color: "var(--text-body)", fontSize: 11, padding: "4px 10px" }}>
       {label}
     </button>
+  );
+}
+
+function fmtBytes(n: number): string {
+  if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + " GiB";
+  if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(0) + " MiB";
+  if (n >= 1024) return (n / 1024).toFixed(0) + " KiB";
+  return n + " B";
+}
+
+// barColor: green under 60%, amber 60–85%, red above.
+function barColor(pct: number): string {
+  if (pct >= 85) return "var(--accent-red)";
+  if (pct >= 60) return "var(--accent-amber)";
+  return "var(--accent-green)";
+}
+
+function StatCard({ label, value, sub, pct }: { label: string; value: string; sub?: string; pct?: number }) {
+  return (
+    <div style={{ flex: "1 1 160px", minWidth: 160, padding: 14, background: "var(--bg-modal)", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
+      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 600, color: "var(--text-bright)", fontFamily: "monospace" }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>{sub}</div>}
+      {pct !== undefined && (
+        <div style={{ marginTop: 8, height: 4, borderRadius: 2, background: "var(--bg-hover)", overflow: "hidden" }}>
+          <div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: barColor(pct) }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const MON_LIMITS = [10, 20, 50, 100, 200];
+
+function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
+  stats: MonitorStats | null;
+  sort: "cpu" | "mem";
+  limit: number;
+  onSortChange: (s: "cpu" | "mem") => void;
+  onLimitChange: (n: number) => void;
+}) {
+  // Tapped/clicked process whose full command line is expanded inline. Works as
+  // the touch equivalent of the desktop hover tooltip (title attr).
+  const [expanded, setExpanded] = useState<number | null>(null);
+
+  const o = stats?.overall;
+  const thCol: React.CSSProperties = { textAlign: "right", padding: "6px 10px", color: "var(--text-muted)", fontWeight: 500, whiteSpace: "nowrap" };
+  const tdNum: React.CSSProperties = { textAlign: "right", padding: "5px 10px", fontFamily: "monospace", color: "var(--text-body)", whiteSpace: "nowrap" };
+  const sortBtn = (key: "cpu" | "mem"): React.CSSProperties => ({
+    background: sort === key ? "var(--accent-blue)" : "var(--bg-hover)",
+    color: sort === key ? "#fff" : "var(--text-body)",
+    fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", cursor: "pointer",
+  });
+
+  return (
+    <div style={{ padding: 16, overflow: "auto" }}>
+      {o && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+          <StatCard label="CPU (whole machine)" value={o.cpu_percent.toFixed(1) + "%"} sub={`${o.num_cpu} cores`} pct={o.cpu_percent} />
+          <StatCard label="Memory" value={o.mem_percent.toFixed(1) + "%"} sub={`${fmtBytes(o.mem_used)} / ${fmtBytes(o.mem_total)}`} pct={o.mem_percent} />
+          <StatCard label="Load average" value={o.load1.toFixed(2)} sub={`5m ${o.load5.toFixed(2)} · 15m ${o.load15.toFixed(2)}`} />
+        </div>
+      )}
+
+      {/* Controls: sort key + row count */}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Sort by</span>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button style={sortBtn("cpu")} onClick={() => onSortChange("cpu")}>CPU</button>
+          <button style={sortBtn("mem")} onClick={() => onSortChange("mem")}>Memory</button>
+        </div>
+        <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>Show</span>
+        <select
+          value={limit}
+          onChange={(e) => onLimitChange(Number(e.target.value))}
+          style={{ background: "var(--bg-base)", color: "var(--text-body)", border: "1px solid var(--text-faintest)", borderRadius: 6, padding: "4px 8px", fontSize: 12 }}
+        >
+          {MON_LIMITS.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
+
+      {!stats || !stats.ready ? (
+        <div style={{ padding: 16, color: "var(--text-muted)", fontSize: 13 }}>
+          {stats ? "Warming up… (collecting first CPU sample)" : "Loading…"}
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>
+            Top {stats.processes.length} processes by {sort === "mem" ? "memory" : "CPU"}.
+            CPU% is per-core (100% = 1 core; this host has {o?.num_cpu}). Tap a row for the full command.
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                <th style={{ ...thCol, textAlign: "right", width: 72 }}>PID</th>
+                <th style={{ ...thCol, textAlign: "left" }}>Command</th>
+                <th style={{ ...thCol, width: 90 }}>CPU%</th>
+                <th style={{ ...thCol, width: 80 }}>Mem%</th>
+                <th style={{ ...thCol, width: 100 }}>RSS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.processes.map((p) => {
+                const isOpen = expanded === p.pid;
+                return (
+                  <Fragment key={p.pid}>
+                    <tr
+                      title={p.cmdline}
+                      onClick={() => setExpanded(isOpen ? null : p.pid)}
+                      style={{ borderBottom: isOpen ? "none" : "1px solid var(--border-subtle)", cursor: "pointer" }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                    >
+                      <td style={tdNum}>{p.pid}</td>
+                      <td style={{ padding: "5px 10px", fontFamily: "monospace", color: "var(--text-bright)", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ color: "var(--text-faint)", marginRight: 6 }}>{isOpen ? "▾" : "▸"}</span>{p.comm}
+                      </td>
+                      <td style={{ ...tdNum, color: p.cpu_percent >= 50 ? "var(--accent-amber)" : "var(--text-body)" }}>{p.cpu_percent.toFixed(1)}</td>
+                      <td style={tdNum}>{p.mem_percent.toFixed(1)}</td>
+                      <td style={tdNum}>{fmtBytes(p.rss_bytes)}</td>
+                    </tr>
+                    {isOpen && (
+                      <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                        <td colSpan={5} style={{ padding: "2px 10px 8px 34px", background: "var(--bg-base)" }}>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>Full command</div>
+                          <code style={{ fontSize: 12, color: "var(--text-body)", wordBreak: "break-all", whiteSpace: "pre-wrap", display: "block" }}>{p.cmdline || "(unavailable)"}</code>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
   );
 }
 

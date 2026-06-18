@@ -2194,3 +2194,37 @@ export function readMemory(sessionId: string, name: string): Promise<{ name: str
   return request(`/api/sessions/${sessionId}/memory/read?${params.toString()}`);
 }
 
+// ── Admin server monitoring (top-like) ─────────────────────────────────────
+
+export interface MonitorOverall {
+  cpu_percent: number;   // whole-machine 0..100
+  mem_total: number;     // bytes
+  mem_used: number;      // bytes
+  mem_percent: number;
+  load1: number;
+  load5: number;
+  load15: number;
+  num_cpu: number;
+}
+
+export interface MonitorProc {
+  pid: number;
+  comm: string;
+  cmdline: string;       // full launch command; "[comm]" for kernel threads
+  cpu_percent: number;   // per-core scale: 100 == one full core
+  mem_percent: number;
+  rss_bytes: number;
+}
+
+export interface MonitorStats {
+  overall: MonitorOverall;
+  processes: MonitorProc[];
+  timestamp: string;
+  ready: boolean;
+}
+
+export function getMonitorStats(sort: "cpu" | "mem" = "cpu", limit = 20): Promise<MonitorStats> {
+  const params = new URLSearchParams({ sort, limit: String(limit) });
+  return request<MonitorStats>(`/api/admin/monitoring/stats?${params}`);
+}
+

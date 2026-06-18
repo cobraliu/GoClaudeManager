@@ -21,6 +21,7 @@ import (
 	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/status"
 	"github.com/loki/goclaudemanager/internal/store"
+	"github.com/loki/goclaudemanager/internal/sysmon"
 	"github.com/loki/goclaudemanager/internal/term"
 	"github.com/loki/goclaudemanager/internal/tmux"
 )
@@ -37,6 +38,7 @@ type Deps struct {
 	Snapshot *status.Manager
 	Term     *term.Service
 	SDK      *sdktransport.Manager
+	Sysmon   *sysmon.Sampler
 }
 
 // Router builds the /api sub-router.
@@ -77,6 +79,7 @@ func Router(d Deps) http.Handler {
 	r.Mount("/claude-caps", ClaudeCapsRouter(d))
 	r.Mount("/admin/terminals", AdminTerminalsRouter(d))
 	r.Mount("/admin/claude-login", ClaudeLoginRouter(d))
+	r.Mount("/admin/monitoring", AdminMonitoringRouter(d))
 
 	return r
 }
