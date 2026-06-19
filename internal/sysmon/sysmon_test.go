@@ -249,12 +249,18 @@ func TestParseMeminfo(t *testing.T) {
 }
 
 func TestParseLoadavg(t *testing.T) {
-	l1, l5, l15 := parseLoadavg("0.52 0.58 0.59 1/823 12345\n")
+	l1, l5, l15, ok := parseLoadavg("0.52 0.58 0.59 1/823 12345\n")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
 	if l1 != 0.52 || l5 != 0.58 || l15 != 0.59 {
 		t.Errorf("loadavg = %v %v %v, want 0.52 0.58 0.59", l1, l5, l15)
 	}
-	if a, b, c := parseLoadavg("bad"); a != 0 || b != 0 || c != 0 {
-		t.Errorf("malformed loadavg = %v %v %v, want zeros", a, b, c)
+	if _, _, _, ok := parseLoadavg("bad"); ok {
+		t.Error("malformed loadavg should report ok=false")
+	}
+	if _, _, _, ok := parseLoadavg("x y z 1/2 3"); ok {
+		t.Error("non-numeric loadavg should report ok=false")
 	}
 }
 

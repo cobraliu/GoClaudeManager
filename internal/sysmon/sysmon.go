@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -77,15 +78,33 @@ type procTime struct {
 // pageSize is captured once; RSS in /proc/<pid>/stat is in pages.
 var pageSize = uint64(os.Getpagesize())
 
+// memSnap / loadSnap carry the last good mem and load readings so a transient
+// /proc/meminfo or /proc/loadavg read failure doesn't blank the cards.
+type memSnap struct {
+	total, used uint64
+	pct         float64
+	ok          bool
+}
+type loadSnap struct {
+	l1, l5, l15 float64
+	ok          bool
+}
+
 // Sampler owns the previous snapshot and publishes the latest Sample.
 type Sampler struct {
 	mu     sync.RWMutex
 	latest Sample
 
-	// prev* are touched only by the Run goroutine (no lock needed for them).
+	// lastReqNano is the UnixNano of the most recent Latest() call (set by the
+	// HTTP handler goroutine, read by Run) — drives lazy sampling.
+	lastReqNano atomic.Int64
+
+	// prev* and last* are touched only by the Run goroutine (no lock needed).
 	prevCPU   cpuTimes
 	prevProcs map[int]procTime
 	havePrev  bool
+	lastMem   memSnap
+	lastLoad  loadSnap
 
 	numCPU int
 	period time.Duration
@@ -119,11 +138,25 @@ func (s *Sampler) Run(ctx context.Context) {
 }
 
 // Latest returns the most recent published Sample (or the zero Sample with
-// Ready=false before the first tick completes).
+// Ready=false before the first tick completes). It also records the access
+// time so the Run loop knows someone is watching (see idle()).
 func (s *Sampler) Latest() Sample {
+	s.lastReqNano.Store(time.Now().UnixNano())
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.latest
+}
+
+// idleAfter: if no Latest() call arrives within this window, Run stops walking
+// /proc. The panel polls every ~2.5s, so this keeps the sampler warm while the
+// Monitor tab is open and quiet (near-zero cost) otherwise.
+const idleAfter = 12 * time.Second
+
+// idle reports whether nobody has polled recently (never, or longer ago than
+// idleAfter). The zero value (0) means "no request yet" → idle.
+func (s *Sampler) idle() bool {
+	last := s.lastReqNano.Load()
+	return last == 0 || time.Since(time.Unix(0, last)) > idleAfter
 }
 
 func (s *Sampler) publish(sample Sample) {
@@ -136,33 +169,40 @@ func (s *Sampler) publish(sample Sample) {
 // against the previous read. It builds a fresh Processes slice every tick and
 // never mutates a published one, so concurrent Latest() readers are safe.
 func (s *Sampler) refresh() {
+	// Lazy: when nobody has polled recently, skip the /proc walk entirely. On
+	// the transition into idle, drop the carried baseline and publish one
+	// not-ready snapshot so a later reopen warms up cleanly instead of flashing
+	// stale CPU numbers from before the gap.
+	if s.idle() {
+		if s.havePrev {
+			s.havePrev = false
+			s.prevProcs = nil
+			s.publish(Sample{Overall: s.lastKnownBase(), Processes: []ProcInfo{}, Timestamp: time.Now(), Ready: false})
+		}
+		return
+	}
+
 	curCPU, cpuOK := readAggCPU()
-	memTotal, memAvail, _ := readMeminfo()
-	l1, l5, l15 := readLoadavg()
+	base := s.readMemLoad()
+
+	// Transient /proc/stat read failure: once we have a baseline, keep serving
+	// the last good Sample rather than regress the live panel to "warming up".
+	// With no baseline yet, publish mem/load only (still not-ready).
+	if !cpuOK {
+		if s.havePrev {
+			return
+		}
+		s.publish(Sample{Overall: base, Processes: []ProcInfo{}, Timestamp: time.Now(), Ready: false})
+		return
+	}
+
 	curProcs := readAllProcs()
 
-	memUsed := uint64(0)
-	if memTotal > memAvail {
-		memUsed = memTotal - memAvail
-	}
-	base := Overall{
-		MemTotal:   memTotal,
-		MemUsed:    memUsed,
-		MemPercent: pct(memUsed, memTotal),
-		Load1:      l1,
-		Load5:      l5,
-		Load15:     l15,
-		NumCPU:     s.numCPU,
-	}
-
-	// First tick (or unreadable /proc/stat): no delta yet — publish mem/load
-	// with zero CPU% and an empty process list, mark not-ready.
-	if !s.havePrev || !cpuOK {
-		if cpuOK {
-			s.prevCPU = curCPU
-			s.prevProcs = curProcs
-			s.havePrev = true
-		}
+	// First good tick: store the baseline, no delta to report yet.
+	if !s.havePrev {
+		s.prevCPU = curCPU
+		s.prevProcs = curProcs
+		s.havePrev = true
 		s.publish(Sample{Overall: base, Processes: []ProcInfo{}, Timestamp: time.Now(), Ready: false})
 		return
 	}
@@ -185,7 +225,7 @@ func (s *Sampler) refresh() {
 			Comm:       cur.comm,
 			Cmdline:    cur.cmdline,
 			CPUPercent: cpu,
-			MemPercent: pct(cur.rssBytes, memTotal),
+			MemPercent: pct(cur.rssBytes, base.MemTotal),
 			RSSBytes:   cur.rssBytes,
 		})
 	}
@@ -197,6 +237,45 @@ func (s *Sampler) refresh() {
 	s.prevCPU = curCPU
 	s.prevProcs = curProcs
 	s.publish(Sample{Overall: base, Processes: procs, Timestamp: time.Now(), Ready: true})
+}
+
+// readMemLoad reads mem + load for this tick, carrying forward the last good
+// values when a read fails (so a transient blip doesn't zero the cards). It
+// updates the cached snapshots on every successful read.
+func (s *Sampler) readMemLoad() Overall {
+	o := Overall{NumCPU: s.numCPU}
+
+	if memTotal, memAvail, ok := readMeminfo(); ok && memTotal > 0 {
+		used := uint64(0)
+		if memTotal > memAvail {
+			used = memTotal - memAvail
+		}
+		o.MemTotal, o.MemUsed, o.MemPercent = memTotal, used, pct(used, memTotal)
+		s.lastMem = memSnap{total: memTotal, used: used, pct: o.MemPercent, ok: true}
+	} else if s.lastMem.ok {
+		o.MemTotal, o.MemUsed, o.MemPercent = s.lastMem.total, s.lastMem.used, s.lastMem.pct
+	}
+
+	if l1, l5, l15, ok := readLoadavg(); ok {
+		o.Load1, o.Load5, o.Load15 = l1, l5, l15
+		s.lastLoad = loadSnap{l1: l1, l5: l5, l15: l15, ok: true}
+	} else if s.lastLoad.ok {
+		o.Load1, o.Load5, o.Load15 = s.lastLoad.l1, s.lastLoad.l5, s.lastLoad.l15
+	}
+	return o
+}
+
+// lastKnownBase builds an Overall from the cached mem/load snapshots (no /proc
+// read), used to publish a clean not-ready snapshot when going idle.
+func (s *Sampler) lastKnownBase() Overall {
+	o := Overall{NumCPU: s.numCPU}
+	if s.lastMem.ok {
+		o.MemTotal, o.MemUsed, o.MemPercent = s.lastMem.total, s.lastMem.used, s.lastMem.pct
+	}
+	if s.lastLoad.ok {
+		o.Load1, o.Load5, o.Load15 = s.lastLoad.l1, s.lastLoad.l5, s.lastLoad.l15
+	}
+	return o
 }
 
 // ── sorting / ranking ──────────────────────────────────────────────────────
@@ -357,24 +436,28 @@ func parseMeminfo(s string) (total, available uint64, ok bool) {
 	return total, available, haveTotal
 }
 
-// readLoadavg returns the 1/5/15-minute load averages.
-func readLoadavg() (l1, l5, l15 float64) {
+// readLoadavg returns the 1/5/15-minute load averages; ok is false if the file
+// can't be read or parsed.
+func readLoadavg() (l1, l5, l15 float64, ok bool) {
 	b, err := os.ReadFile("/proc/loadavg")
 	if err != nil {
-		return 0, 0, 0
+		return 0, 0, 0, false
 	}
 	return parseLoadavg(string(b))
 }
 
-func parseLoadavg(s string) (l1, l5, l15 float64) {
+func parseLoadavg(s string) (l1, l5, l15 float64, ok bool) {
 	f := strings.Fields(s)
 	if len(f) < 3 {
-		return 0, 0, 0
+		return 0, 0, 0, false
 	}
-	l1, _ = strconv.ParseFloat(f[0], 64)
-	l5, _ = strconv.ParseFloat(f[1], 64)
-	l15, _ = strconv.ParseFloat(f[2], 64)
-	return l1, l5, l15
+	l1, e1 := strconv.ParseFloat(f[0], 64)
+	l5, e2 := strconv.ParseFloat(f[1], 64)
+	l15, e3 := strconv.ParseFloat(f[2], 64)
+	if e1 != nil || e2 != nil || e3 != nil {
+		return 0, 0, 0, false
+	}
+	return l1, l5, l15, true
 }
 
 // readAllProcs walks /proc and reads each numeric pid's stat + comm. Pids that

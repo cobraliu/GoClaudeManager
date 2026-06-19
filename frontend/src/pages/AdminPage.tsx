@@ -193,9 +193,10 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
     return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
   }, [refreshUsers, refreshSessions]);
 
-  // Monitoring poll — only while the Monitor tab is active, so /proc isn't
-  // sampled when nobody is looking. Pauses when the tab is backgrounded.
-  // Re-runs (and re-fetches immediately) when the sort key or row limit change.
+  // Monitoring poll — only while the Monitor tab is active and the page is
+  // visible. When polling stops, the backend sampler idles out too (it only
+  // walks /proc while Latest() requests keep arriving), so nothing is sampled
+  // when nobody is looking. Re-fetches immediately when sort/limit change.
   useEffect(() => {
     if (tab !== "monitoring") return;
     let id: ReturnType<typeof setInterval>;
@@ -1038,6 +1039,10 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
   // Tapped/clicked process whose full command line is expanded inline. Works as
   // the touch equivalent of the desktop hover tooltip (title attr).
   const [expanded, setExpanded] = useState<number | null>(null);
+  // Hovered row, tracked in React state rather than mutating DOM style directly:
+  // the 2.5s poll re-renders the table, and a re-render would clobber an
+  // imperatively-set background, making the highlight flicker off under the cursor.
+  const [hovered, setHovered] = useState<number | null>(null);
 
   const o = stats?.overall;
   const thCol: React.CSSProperties = { textAlign: "right", padding: "6px 10px", color: "var(--text-muted)", fontWeight: 500, whiteSpace: "nowrap" };
@@ -1103,9 +1108,13 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
                     <tr
                       title={p.cmdline}
                       onClick={() => setExpanded(isOpen ? null : p.pid)}
-                      style={{ borderBottom: isOpen ? "none" : "1px solid var(--border-subtle)", cursor: "pointer" }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                      onMouseEnter={() => setHovered(p.pid)}
+                      onMouseLeave={() => setHovered((h) => (h === p.pid ? null : h))}
+                      style={{
+                        borderBottom: isOpen ? "none" : "1px solid var(--border-subtle)",
+                        cursor: "pointer",
+                        background: hovered === p.pid ? "var(--bg-hover)" : "transparent",
+                      }}
                     >
                       <td style={tdNum}>{p.pid}</td>
                       <td style={{ padding: "5px 10px", fontFamily: "monospace", color: "var(--text-bright)", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
