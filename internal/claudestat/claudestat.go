@@ -334,6 +334,18 @@ func IsModelSwitchDialog(screen string) bool {
 	if screen == "" {
 		return false
 	}
+	// An AskUserQuestion widget renders its first option as "❯ 1. …" — the same
+	// row this matcher anchors on — so a model-header substring anywhere above it
+	// (a model-themed question, or residual "/model" switch text) would make this
+	// return a false positive and the caller auto-press Enter, pre-answering the
+	// AUQ. The model-switch dialog never carries the AUQ markers below, so bail
+	// when they are present. (status.Compute also checks AUQ first; this guards
+	// any other caller.)
+	if strings.Contains(screen, "☐") ||
+		strings.Contains(strings.ToLower(screen), "type something.") ||
+		strings.Contains(strings.ToLower(screen), "chat about this") {
+		return false
+	}
 	lines := strings.Split(ansiRE.ReplaceAllString(screen, ""), "\n")
 	headIdx := -1
 	for i, ln := range lines {
@@ -373,33 +385,8 @@ type pidSession struct {
 //
 // It reads ~/.claude/sessions/{pid}.json.
 func GetPIDWaitingState(pid int) (waitingFor string, hintType string, ok bool) {
-	if pid == 0 {
-		return "", "", false
-	}
-	home, hok := homeDir()
-	if !hok {
-		return "", "", false
-	}
-	sf := filepath.Join(home, ".claude", "sessions", strconv.Itoa(pid)+".json")
-	b, err := os.ReadFile(sf)
-	if err != nil {
-		// Missing file or unreadable → not waiting.
-		return "", "", false
-	}
-	var data pidSession
-	if err := json.Unmarshal(b, &data); err != nil {
-		return "", "", false
-	}
-	if data.Status != "waiting" {
-		return "", "", false
-	}
-	if data.WaitingFor == "" {
-		return "", "", false
-	}
-	if strings.Contains(data.WaitingFor, "AskUserQuestion") {
-		return data.WaitingFor, "auq", true
-	}
-	return data.WaitingFor, "approve", true
+	waitingFor, hintType, ok, _ = GetPIDState(pid)
+	return waitingFor, hintType, ok
 }
 
 // PIDStateKnown reports whether the Claude CLI process's state file
@@ -409,23 +396,42 @@ func GetPIDWaitingState(pid int) (waitingFor string, hintType string, ok bool) {
 // AskUserQuestion. Callers use this to distinguish "definitely not waiting"
 // from "state unobservable".
 func PIDStateKnown(pid int) bool {
+	_, _, _, known := GetPIDState(pid)
+	return known
+}
+
+// GetPIDState reads ~/.claude/sessions/{pid}.json ONCE and returns both the
+// waiting state (waitingFor, hintType, waiting) and whether the file parsed with
+// a non-empty status (known). status.Compute needs both per session per poll;
+// reading the small file once instead of via GetPIDWaitingState + PIDStateKnown
+// halves the PID-file I/O on the hot status loop. The two functions above are
+// thin wrappers for callers that only need one half.
+func GetPIDState(pid int) (waitingFor string, hintType string, waiting bool, known bool) {
 	if pid == 0 {
-		return false
+		return "", "", false, false
 	}
 	home, hok := homeDir()
 	if !hok {
-		return false
+		return "", "", false, false
 	}
 	sf := filepath.Join(home, ".claude", "sessions", strconv.Itoa(pid)+".json")
 	b, err := os.ReadFile(sf)
 	if err != nil {
-		return false
+		// Missing file or unreadable → not waiting, state unobservable.
+		return "", "", false, false
 	}
 	var data pidSession
 	if err := json.Unmarshal(b, &data); err != nil {
-		return false
+		return "", "", false, false
 	}
-	return data.Status != ""
+	known = data.Status != ""
+	if data.Status != "waiting" || data.WaitingFor == "" {
+		return "", "", false, known
+	}
+	if strings.Contains(data.WaitingFor, "AskUserQuestion") {
+		return data.WaitingFor, "auq", true, known
+	}
+	return data.WaitingFor, "approve", true, known
 }
 
 // FormatTUIHint returns a human-readable hint describing what Claude is waiting

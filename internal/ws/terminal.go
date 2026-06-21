@@ -93,8 +93,8 @@ func terminalWS(d Deps, w http.ResponseWriter, r *http.Request) {
 		if hs, ok := d.Tmux.GetPaneHistorySize(session.TmuxSessionName); ok {
 			_ = d.Store.SyncOutputOffset(sessionID, int64(hs))
 		}
-		_, _ = d.Tmux.Run("resize-window", "-t", session.TmuxSessionName, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
-		_, _ = d.Tmux.Run("refresh-client", "-t", session.TmuxSessionName)
+		_, _ = d.Tmux.RunTimeout(5*time.Second, "resize-window", "-t", session.TmuxSessionName, "-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+		_, _ = d.Tmux.RunTimeout(5*time.Second, "refresh-client", "-t", session.TmuxSessionName)
 	}()
 
 	// Reader goroutine: blocking PTY reads → outCh. EOF closes the channel.
@@ -234,7 +234,9 @@ func (s *termState) inputLoop(ctx context.Context, cols, rows int) {
 		case "resize":
 			if msg.Cols >= minCols && msg.Rows >= minRows {
 				_ = s.pty.Resize(msg.Cols, msg.Rows)
-				_, _ = s.d.Tmux.Run("resize-window", "-t", s.session.TmuxSessionName, "-x", strconv.Itoa(msg.Cols), "-y", strconv.Itoa(msg.Rows))
+				// Bounded: this runs inline on the input loop, so a wedged tmux
+				// must not stall client input handling indefinitely.
+				_, _ = s.d.Tmux.RunTimeout(5*time.Second, "resize-window", "-t", s.session.TmuxSessionName, "-x", strconv.Itoa(msg.Cols), "-y", strconv.Itoa(msg.Rows))
 			}
 		case "exit-copy-mode":
 			_, _ = s.d.Tmux.Run("send-keys", "-t", s.session.TmuxSessionName, "-X", "cancel")

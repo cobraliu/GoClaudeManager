@@ -17,6 +17,7 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -164,6 +165,29 @@ func (c *Client) run(args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s (%s)", ErrTmux,
+			shellQuoteJoin(full), strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// RunTimeout is Run with a hard deadline: the tmux process is killed if it
+// hasn't finished within timeout. Plain Run has no bound, so a wedged tmux
+// server would hang the caller (and leak its goroutine) forever — this variant
+// is for fire-and-forget control commands (resize-window, refresh-client) whose
+// result the caller does not block on. Returns context.DeadlineExceeded on kill.
+func (c *Client) RunTimeout(timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	full := append([]string{c.TmuxBin, "-L", c.SocketName}, args...)
+	cmd := exec.CommandContext(ctx, full[0], full[1:]...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("%w: %s timed out: %v", ErrTmux, shellQuoteJoin(full), ctx.Err())
+		}
 		return "", fmt.Errorf("%w: %s (%s)", ErrTmux,
 			shellQuoteJoin(full), strings.TrimSpace(stderr.String()))
 	}

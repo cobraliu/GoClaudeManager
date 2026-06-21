@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+-- GetAllAgentSessionIDs filters by agent_session_id IS NOT NULL on read-heavy
+-- conversation paths (resolveChatSID, subagents, external-session browsing);
+-- without this index that is a full table scan on every such request.
+CREATE INDEX IF NOT EXISTS idx_sessions_agent ON sessions(agent_session_id);
 CREATE TABLE IF NOT EXISTS session_views (
     session_id TEXT NOT NULL,
     user_id TEXT NOT NULL,

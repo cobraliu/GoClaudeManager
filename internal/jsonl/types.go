@@ -47,6 +47,18 @@ type rawMessage struct {
 	Role       string       `json:"role"`
 	StopReason *string      `json:"stop_reason"`
 	Content    rawJSON      `json:"content"` // string OR []contentBlock
+	// Model and Usage appear on assistant lines; both zero-value-safe and unused
+	// by existing derivations. Consumed by subagentState (token accounting).
+	Model string    `json:"model"`
+	Usage *rawUsage `json:"usage"`
+}
+
+// rawUsage is the per-message token accounting carried on assistant lines.
+type rawUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 type contentBlock struct {
@@ -56,6 +68,7 @@ type contentBlock struct {
 	ID        string  `json:"id"`         // tool_use id
 	ToolUseID string  `json:"tool_use_id"` // tool_result link
 	Input     rawJSON `json:"input"`      // tool_use input
+	IsError   bool    `json:"is_error"`   // tool_result error flag (→ subagent failed)
 }
 
 type rawAttachment struct {

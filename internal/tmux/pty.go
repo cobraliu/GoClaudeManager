@@ -85,23 +85,32 @@ func (h *PtyHandle) Close() error {
 	if h.Cmd == nil || h.Cmd.Process == nil {
 		return nil
 	}
+	cmd := h.Cmd
+	h.Cmd = nil
+
 	// Closing the master sends SIGHUP to the foreground process group; give the
-	// child ~300ms to exit on its own, polling like the Python WNOHANG loop.
+	// child ~300ms to exit on its own. The reaper goroutine closes `done` when
+	// Wait returns; close() never blocks, so if we stop waiting below the
+	// goroutine still completes and reclaims itself once tmux exits — no leak.
 	done := make(chan struct{})
 	go func() {
-		_ = h.Cmd.Wait()
+		_ = cmd.Wait()
 		close(done)
 	}()
 	select {
 	case <-done:
-		h.Cmd = nil
 		return nil
 	case <-time.After(300 * time.Millisecond):
 	}
-	// Still alive — force-kill and reap (blocking).
-	_ = h.Cmd.Process.Kill()
-	<-done
-	h.Cmd = nil
+	// Still alive — force-kill, then wait a BOUNDED time for the reap. Without
+	// the cap a wedged child (zombie, uninterruptible Wait) would block Close
+	// indefinitely and, with it, whatever lock the caller holds.
+	_ = cmd.Process.Kill()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		// Abandon the wait; the reaper exits on its own when Wait finally returns.
+	}
 	return nil
 }
 

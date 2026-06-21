@@ -138,6 +138,7 @@ import { FileIcon, NewFolderIcon } from "../components/FileIcon";
 import { HtmlViewer } from "../components/HtmlViewer";
 import CodexChatInput from "../components/CodexChatInput";
 import { useFsWatch } from "../lib/useFsWatch";
+import { usePageVisible } from "../hooks/usePageVisible";
 import { apiPath } from "../lib/baseUrl";
 import type { DirInfoResponse } from "../api/sessionApi";
 
@@ -671,6 +672,7 @@ function _writeListCache(items: SessionMeta[], total: number) {
 
 function ListView({ username, onLogout, onOpen, onSwitchToAdmin, onOpenTool, theme, onToggleTheme, terminalFont, onTerminalFontChange }: { username: string; onLogout: () => void; onOpen: (s: SessionMeta) => void; onSwitchToAdmin?: () => void; onOpenTool?: () => void; theme?: "dark" | "light"; onToggleTheme?: () => void; terminalFont?: string; onTerminalFontChange?: (font: string) => void }) {
   const isAdmin = localStorage.getItem("role") === "admin";
+  const pageVisible = usePageVisible();
   const cached = _readListCache();
   const [sessions, setSessions] = useState<SessionMeta[]>(cached?.items ?? []);
   const [total, setTotal] = useState(cached?.total ?? 0);
@@ -721,13 +723,16 @@ function ListView({ username, onLogout, onOpen, onSwitchToAdmin, onOpenTool, the
     } catch {}
   }, []);
 
-  // Initial load (with spinner) + full refresh every 30s + status refresh every 3s
+  // Initial load (with spinner) + full refresh every 30s + status refresh every 3s.
+  // Backgrounded tab: do the catch-up fetch, then install no timers (resumes on
+  // return, since pageVisible flipping re-runs this effect).
   useEffect(() => {
     fetchSessions(page, true);
+    if (!pageVisible) return;
     const fullTimer = setInterval(() => fetchSessions(page, false), 30000);
     const statusTimer = setInterval(refreshStatus, 3000);
     return () => { clearInterval(fullTimer); clearInterval(statusTimer); };
-  }, [page, fetchSessions, refreshStatus]);
+  }, [page, fetchSessions, refreshStatus, pageVisible]);
 
   const totalPages = Math.max(1, Math.ceil(total / MOBILE_PAGE_SIZE));
 
@@ -2658,6 +2663,7 @@ function MobileTasksPanel({
   const [active, setActive] = useState<TodoItem[]>([]);
   const [history, setHistory] = useState<TodoPlan[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const pageVisible = usePageVisible();
   const refresh = useCallback(async () => {
     try {
       const data = await listSessionTodos(sessionId);
@@ -2670,10 +2676,12 @@ function MobileTasksPanel({
     refresh();
     // Full-screen panel, actively watched — poll at second-level (1.5s, matching
     // the Chat pane) so status transitions stay near-real-time instead of
-    // lagging up to 5s.
+    // lagging up to 5s. Hidden tab installs no interval (catch-up fetch above
+    // still runs; resumes when the tab returns).
+    if (!pageVisible) return;
     const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, pageVisible]);
 
   const total = active.length;
   const done = active.filter(t => t.status === "completed").length;
@@ -2793,6 +2801,7 @@ function MobileGoalsPanel({
   const [active, setActive] = useState<Goal | null>(null);
   const [history, setHistory] = useState<Goal[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const pageVisible = usePageVisible();
   const refresh = useCallback(async () => {
     try {
       const data = await listGoals(sessionId);
@@ -2805,10 +2814,12 @@ function MobileGoalsPanel({
     refresh();
     // Full-screen panel, actively watched — poll at second-level (1.5s, matching
     // the Chat pane) so status transitions stay near-real-time instead of
-    // lagging up to 5s.
+    // lagging up to 5s. Hidden tab installs no interval (catch-up fetch above
+    // still runs; resumes when the tab returns).
+    if (!pageVisible) return;
     const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, pageVisible]);
 
   const fmt = (ts: number) => {
     if (!ts) return "";
@@ -2890,6 +2901,7 @@ function MobileAuqsPanel({
   const [loaded, setLoaded] = useState(false);
   const [sort, setSort] = useState<"asc" | "desc">(() => (localStorage.getItem("auqsPanelSort") === "desc" ? "desc" : "asc"));
   const [showOptions, setShowOptions] = useState<boolean>(() => localStorage.getItem("auqsPanelShowOptions") === "1");
+  const pageVisible = usePageVisible();
   const refresh = useCallback(async () => {
     try { setAuqs(await listSessionAuqs(sessionId)); } catch { /* ignore */ }
     finally { setLoaded(true); }
@@ -2898,10 +2910,12 @@ function MobileAuqsPanel({
     refresh();
     // Full-screen panel, actively watched — poll at second-level (1.5s, matching
     // the Chat pane) so status transitions stay near-real-time instead of
-    // lagging up to 5s.
+    // lagging up to 5s. Hidden tab installs no interval (catch-up fetch above
+    // still runs; resumes when the tab returns).
+    if (!pageVisible) return;
     const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, pageVisible]);
 
   const fmt = (ts: number) => {
     if (!ts) return "";
@@ -5110,6 +5124,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
   terminalFont?: string; onTerminalFontChange?: (font: string) => void;
 }) {
   const [session, setSession] = useState(initialSession);
+  const pageVisible = usePageVisible();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCaps, setShowCaps] = useState(false);
@@ -5280,10 +5295,11 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
       } catch { /* ignore */ }
     };
     poll();
+    if (!pageVisible) return; // hidden tab: one catch-up poll, no interval
     const id = setInterval(poll, 3000);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSession.id]);
+  }, [initialSession.id, pageVisible]);
   const [renamingDetail, setRenamingDetail] = useState(false);
   const [renameDetailValue, setRenameDetailValue] = useState("");
 
@@ -6060,6 +6076,7 @@ function MobileAttentionBanner({ items, onJump }: { items: MobileAttentionItem[]
 export function MobilePage({ username, onLogout, onSwitchToAdmin, onOpenTool, theme, onToggleTheme }: { username: string; onLogout: () => void; onSwitchToAdmin?: () => void; onOpenTool?: () => void; theme?: "dark" | "light"; onToggleTheme?: () => void }) {
   const [openSession, setOpenSession] = useState<SessionMeta | null>(null);
   const [terminalFont, setTerminalFontState] = useState<string | undefined>(undefined);
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
     getConfig().then(c => setTerminalFontState(c.terminal_font || undefined)).catch(() => {});
@@ -6142,9 +6159,10 @@ export function MobilePage({ username, onLogout, onSwitchToAdmin, onOpenTool, th
       } catch { /* ignore */ }
     };
     poll();
+    if (!pageVisible) return () => { cancelled = true; }; // hidden tab: no interval
     const id = setInterval(poll, 3000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [pageVisible]);
 
   const jumpToSession = (id: string) => {
     getSession(id).then((s) => openDetail(s)).catch(() => {});

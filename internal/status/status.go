@@ -96,19 +96,87 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// computeConcurrency bounds how many sessions are Compute'd in parallel per
+// refresh. Each Compute spawns tmux subprocesses + reads files; a small pool
+// keeps a 30-session machine from forking 30 tmux captures at once while still
+// collapsing the wall-clock from sum-of-sessions to ceil(n/pool).
+const computeConcurrency = 8
+
+// refreshDeadline caps how long one refresh waits for stragglers. tmux.run has
+// no timeout, so a wedged pane capture would otherwise stall the whole loop;
+// past the deadline we stop waiting and carry the previous snapshot value
+// forward for any session that hasn't reported yet.
+const refreshDeadline = 10 * time.Second
+
 func (m *Manager) refresh() {
 	all, err := m.store.All()
 	if err != nil {
 		slog.Warn("status refresh: store.All failed", "err", err)
 		return
 	}
-	next := make(map[string]Computed)
+	active := make([]*model.Session, 0, len(all))
 	for _, s := range all {
 		if s.Status != model.StatusRunning && s.Status != model.StatusDetached {
 			continue
 		}
-		next[s.ID] = m.Compute(s)
+		active = append(active, s)
 	}
+
+	next := make(map[string]Computed, len(active))
+	if len(active) == 0 {
+		m.mu.Lock()
+		m.snap = next
+		m.mu.Unlock()
+		return
+	}
+
+	// Previous snapshot is the carry-forward source for sessions that miss the
+	// deadline (a wedged tmux capture must not drop a session from /status).
+	m.mu.RLock()
+	prev := m.snap
+	m.mu.RUnlock()
+
+	type result struct {
+		id string
+		c  Computed
+	}
+	// Buffered to len(active) so a straggler goroutine can always complete its
+	// send and exit even after we've stopped collecting — no goroutine leak
+	// beyond the hung syscall itself.
+	results := make(chan result, len(active))
+	sem := make(chan struct{}, computeConcurrency)
+	for _, s := range active {
+		s := s
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem }()
+			results <- result{s.ID, m.Compute(s)}
+		}()
+	}
+
+	got := make(map[string]bool, len(active))
+	timeout := time.After(refreshDeadline)
+collect:
+	for i := 0; i < len(active); i++ {
+		select {
+		case r := <-results:
+			next[r.id] = r.c
+			got[r.id] = true
+		case <-timeout:
+			slog.Warn("status refresh: deadline hit, carrying forward stragglers",
+				"reported", len(got), "active", len(active))
+			break collect
+		}
+	}
+	// Carry forward any session that didn't report in time.
+	for _, s := range active {
+		if !got[s.ID] {
+			if c, ok := prev[s.ID]; ok {
+				next[s.ID] = c
+			}
+		}
+	}
+
 	m.mu.Lock()
 	m.snap = next
 	m.mu.Unlock()
@@ -142,8 +210,25 @@ func (m *Manager) Compute(s *model.Session) Computed {
 	pidWaiting := false
 	pidKnown := false
 	if eligible && s.ClaudeProcPID != nil {
-		waitingFor, hintType, pidWaiting = claudestat.GetPIDWaitingState(*s.ClaudeProcPID)
-		pidKnown = pidWaiting || claudestat.PIDStateKnown(*s.ClaudeProcPID)
+		// Single read of ~/.claude/sessions/{pid}.json yields both the waiting
+		// state and whether the file is parseable (pidKnown) — avoids two reads
+		// of the same small file per session per poll.
+		waitingFor, hintType, pidWaiting, pidKnown = claudestat.GetPIDState(*s.ClaudeProcPID)
+	}
+
+	// captureScreen lazily captures the pane's visible screen at most once per
+	// Compute and memoizes the result. Several branches below (AUQ / approve /
+	// model-dialog, then compaction) inspect the same screen; without memoization
+	// each would fork its own `tmux capture-pane` subprocess for the same pane in
+	// a single 2s poll — wasted process spawns multiplied by every active session.
+	var screenCache string
+	var screenCaptured bool
+	captureScreen := func() string {
+		if !screenCaptured {
+			screenCache = m.tmux.CaptureVisibleScreen(s.TmuxSessionName)
+			screenCaptured = true
+		}
+		return screenCache
 	}
 
 	if pidWaiting {
@@ -155,15 +240,39 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		case "auq":
 			auq = hookAuq
 			if auq == nil {
-				if screen := m.tmux.CaptureVisibleScreen(s.TmuxSessionName); screen != "" {
+				if screen := captureScreen(); screen != "" {
 					if a, ok := claudestat.ParseAUQFromScreen(screen); ok {
 						auq = a
 					}
 				}
 			}
 		case "approve":
-			if screen := m.tmux.CaptureVisibleScreen(s.TmuxSessionName); screen != "" {
-				if claudestat.IsModelSwitchDialog(screen) {
+			if screen := captureScreen(); screen != "" {
+				// Claim a real AskUserQuestion FIRST. Newer Claude Code (≥2.1.x)
+				// reports an AUQ in the PID file as a generic "permission prompt",
+				// so AUQs land in this approve branch too. The model-switch check
+				// must NOT run before it: IsModelSwitchDialog fires on a model
+				// header substring within 12 lines above a "❯ 1." row, and an AUQ's
+				// first option renders as exactly "❯ 1. …" — so a model-themed
+				// question (or residual "Set model to…" text from the manager's own
+				// /model switch just above the menu) would make autoConfirm press
+				// Enter and pre-answer the AUQ with option 1, destroying the user's
+				// custom answer. ParseAUQFromScreen only matches a real AUQ widget
+				// (☐ header + options + Type something/Chat about this); model/plan/
+				// permission screens have no ☐, so claiming AUQ first never steals a
+				// genuine one. Prefer the hook payload when it matches the screen:
+				// the hook carries the exact original question text, while the screen
+				// parse holds only the first rendered line — and the frontend dedups
+				// answered questions by text, so the sources must agree or an
+				// already-answered AUQ re-pops after submit.
+				if a, ok := claudestat.ParseAUQFromScreen(screen); ok {
+					if hookAuq != nil && claudestat.AUQScreenMatchesHook(a, hookAuq) {
+						auq = hookAuq
+					} else {
+						auq = a
+					}
+					hintType = "auq"
+				} else if claudestat.IsModelSwitchDialog(screen) {
 					// The "Switch model?" / "Set model to…" confirmation dialog
 					// (waitingFor "dialog open" also lands here). It blocks the
 					// session after the manager sends "/model X" or at startup,
@@ -172,17 +281,15 @@ func (m *Manager) Compute(s *model.Session) Computed {
 					// and surface no card or hint for this poll.
 					m.autoConfirmModelDialog(s)
 					dialogAutoConfirmed = true
-					break
-				}
-				// Recognize a plan-approval menu structurally (ParsePlanMenu —
-				// the same robust matcher the submit path uses), NOT via a
-				// brittle header string like "Claude has written up a plan"
-				// that breaks across Claude Code versions. ParsePlanMenu needs
-				// ≥2 numbered options plus plan-specific phrasing
-				// (bypass permissions / auto-accept edits / manually approve
-				// edits) or "Would you like to proceed", none of which appear
-				// in a tool-use approval prompt — so it won't misclassify.
-				if opts, hi, ok := claudestat.ParsePlanMenu(screen); ok {
+				} else if opts, hi, ok := claudestat.ParsePlanMenu(screen); ok {
+					// Recognize a plan-approval menu structurally (ParsePlanMenu —
+					// the same robust matcher the submit path uses), NOT via a
+					// brittle header string like "Claude has written up a plan"
+					// that breaks across Claude Code versions. ParsePlanMenu needs
+					// ≥2 numbered options plus plan-specific phrasing
+					// (bypass permissions / auto-accept edits / manually approve
+					// edits) or "Would you like to proceed", none of which appear
+					// in a tool-use approval prompt — so it won't misclassify.
 					planViaScreen = true
 					// Surface the real menu options so the UI can render them
 					// like AUQ (instead of a fixed Approve/Reject pair).
@@ -194,25 +301,6 @@ func (m *Manager) Compute(s *model.Session) Computed {
 				} else if strings.Contains(screen, "Claude wants to use") ||
 					(strings.Contains(screen, "Esc to cancel") && reYesOption.MatchString(screen)) {
 					approve = hookApprove
-				} else if a, ok := claudestat.ParseAUQFromScreen(screen); ok {
-					// Newer Claude Code (≥2.1.x) reports an AskUserQuestion menu in
-					// the PID waiting file as a generic "permission prompt", so
-					// hintType is "approve" even though the screen shows an AUQ.
-					// The plan/permission checks above already claimed genuine
-					// approval prompts; ParseAUQFromScreen only matches a real AUQ
-					// widget (☐ header + numbered options + Type something/Chat
-					// about this), so reaching here means it's a misclassified AUQ.
-					// Prefer the hook-recorded payload when it matches the screen:
-					// the hook carries the exact original question text, while the
-					// screen parse holds only the first rendered line — and the
-					// frontend dedups answered questions by text, so all sources
-					// must agree or an already-answered AUQ re-pops after submit.
-					if hookAuq != nil && claudestat.AUQScreenMatchesHook(a, hookAuq) {
-						auq = hookAuq
-					} else {
-						auq = a
-					}
-					hintType = "auq"
 				}
 			}
 		}
@@ -244,7 +332,9 @@ func (m *Manager) Compute(s *model.Session) Computed {
 	screenForHook := ""
 	if eligible && auq == nil && approve == nil && s.LastActivityAt != nil {
 		if time.Since(s.LastActivityAt.Time) < 60*time.Second {
-			screenForHook = m.tmux.CaptureVisibleScreen(s.TmuxSessionName)
+			// Reuses the memoized capture when the pidWaiting branch above already
+			// grabbed this pane's screen this poll.
+			screenForHook = captureScreen()
 		}
 	}
 	if eligible && agentID != "" {

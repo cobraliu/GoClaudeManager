@@ -23,6 +23,7 @@ package git
 // shadow's info/exclude so it is never tracked.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -379,20 +380,66 @@ func (s *Service) ShadowCommitDetail(ctx context.Context, gitDir, workdir, hash 
 		paths = paths[:50]
 	}
 	files := make([]FileVersion, 0, len(paths))
+	if len(paths) == 0 {
+		return ShadowCommitDetail{Hash: hash, Message: strings.TrimRight(msg, "\n"), Files: files}, nil
+	}
+
+	// Fetch every old+new blob in a SINGLE `git cat-file --batch` rather than two
+	// `git show` spawns per file (up to 100 subprocesses for a 50-file commit).
+	// Requests are emitted old-then-new per path; responses come back in order.
+	// A blob absent at that rev (added/deleted file) reports "missing" → "".
+	var sb strings.Builder
 	for _, p := range paths {
-		// `git show <rev>:<path>` errors for a path absent at that rev (added or
-		// deleted); treat that as empty rather than failing the whole request.
-		old, _, oerr := s.runEnv(ctx, workdir, env, "show", hash+"^:"+p)
-		if oerr != nil {
-			old = ""
-		}
-		newer, _, nerr := s.runEnv(ctx, workdir, env, "show", hash+":"+p)
-		if nerr != nil {
-			newer = ""
-		}
-		files = append(files, FileVersion{Path: p, OldContent: old, NewContent: newer})
+		sb.WriteString(hash + "^:" + p + "\n")
+		sb.WriteString(hash + ":" + p + "\n")
+	}
+	out, _, berr := s.runStdinEnv(ctx, workdir, env, sb.String(), "cat-file", "--batch")
+	if berr != nil {
+		return ShadowCommitDetail{}, fmt.Errorf("shadow detail: cat-file: %v", berr)
+	}
+	contents := parseCatFileBatch([]byte(out), len(paths)*2)
+	for i, p := range paths {
+		files = append(files, FileVersion{Path: p, OldContent: contents[2*i], NewContent: contents[2*i+1]})
 	}
 	return ShadowCommitDetail{Hash: hash, Message: strings.TrimRight(msg, "\n"), Files: files}, nil
+}
+
+// parseCatFileBatch decodes `git cat-file --batch` output into exactly n content
+// strings (in request order). Each present object is framed as
+// "<oid> <type> <size>\n<size bytes>\n"; a missing object is "<spec> missing\n"
+// and yields "". The result is padded with "" if git returned fewer records.
+func parseCatFileBatch(out []byte, n int) []string {
+	results := make([]string, 0, n)
+	i := 0
+	for len(results) < n {
+		nl := bytes.IndexByte(out[i:], '\n')
+		if nl < 0 {
+			break
+		}
+		header := string(out[i : i+nl])
+		i += nl + 1
+		fields := strings.Fields(header)
+		if len(fields) >= 2 && fields[len(fields)-1] == "missing" {
+			results = append(results, "")
+			continue
+		}
+		if len(fields) < 3 {
+			break
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil || i+size > len(out) {
+			break
+		}
+		results = append(results, string(out[i:i+size]))
+		i += size
+		if i < len(out) && out[i] == '\n' { // trailing LF after content
+			i++
+		}
+	}
+	for len(results) < n {
+		results = append(results, "")
+	}
+	return results
 }
 
 // ── restore ──────────────────────────────────────────────────────────────────

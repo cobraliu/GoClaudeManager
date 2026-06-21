@@ -2,7 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMe
 import { createPortal } from "react-dom";
 import hljs from "highlight.js/lib/common";
 import { marked, renderMarkdown } from "../lib/markdown";
-import { getRawMessages, getRawMessagesPage, attachSession, getSubAgents, getSubAgentLines, submitAuqAnswers, approveToolRequest, approvePlan, rewindSession, readClaudePlan, resolveCodexAuq, uploadAttachment, registerLostMessage, dismissLostMessage, type RawMessage, type RawContentBlock, type RawUsage, type SubAgentMeta, type UploadedAttachment, type LostMessage } from "../api/sessionApi";
+import { getRawMessages, getRawMessagesPage, attachSession, getSubAgents, getSubAgentLines, submitAuqAnswers, approveToolRequest, approvePlan, rewindSession, readClaudePlan, resolveCodexAuq, uploadAttachment, registerLostMessage, dismissLostMessage, formatTokens, formatDuration, type RawMessage, type RawContentBlock, type RawUsage, type SubAgentMeta, type UploadedAttachment, type LostMessage } from "../api/sessionApi";
 import { WsClient } from "../lib/wsClient";
 import { apiPath } from "../lib/baseUrl";
 import {
@@ -22,6 +22,7 @@ import {
 } from "../lib/sessionInputPersist";
 import { PromptHistoryPopover } from "./PromptHistoryPopover";
 import { copyTextDetect, selectElementContents } from "../lib/copyText";
+import { usePageVisible } from "../hooks/usePageVisible";
 
 const POLL_MS = 1500;
 // Idle cadence: when the session is not streaming/compacting/waiting and no
@@ -2440,10 +2441,11 @@ function SubAgentToolRow({ name, input, result }: {
   );
 }
 
-function SubAgentModal({ sessionId, agentId, isDone, onClose }: {
+function SubAgentModal({ sessionId, agentId, isDone, meta, onClose }: {
   sessionId: string;
   agentId: string;
   isDone: boolean;
+  meta?: SubAgentMeta;
   onClose: () => void;
 }) {
   const [lines, setLines] = useState<string[]>([]);
@@ -2539,10 +2541,14 @@ function SubAgentModal({ sessionId, agentId, isDone, onClose }: {
           padding: "10px 16px", borderBottom: "1px solid var(--border)",
           display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0,
         }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-bright)" }}>Sub-agent log</span>
+            {meta?.agentType && (
+              <span style={{ fontSize: 10, background: "var(--bg-hover)", color: "var(--text-secondary)", borderRadius: 3, padding: "1px 6px", fontFamily: "monospace" }}>{meta.agentType}</span>
+            )}
             {!isDone && <span className="streaming-dot" title="Watching…" />}
-            {isDone && <span style={{ fontSize: 10, color: "var(--accent-green)", fontFamily: "monospace" }}>done</span>}
+            {isDone && !meta && <span style={{ fontSize: 10, color: "var(--accent-green)", fontFamily: "monospace" }}>done</span>}
+            <SubagentBadges meta={meta} showStatus />
           </div>
           <button
             onClick={onClose}
@@ -2580,11 +2586,13 @@ function ToolCallBlock({
   result,
   sessionId,
   agentId,
+  subMeta,
 }: {
   block: RawContentBlock;
   result?: { content: string; isError: boolean };
   sessionId?: string;
   agentId?: string;
+  subMeta?: SubAgentMeta;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showAgentLog, setShowAgentLog] = useState(false);
@@ -2649,6 +2657,12 @@ function ToolCallBlock({
           {resultText.slice(0, 100)}
         </div>
       )}
+      {/* Agent: compact metric badges in collapsed state */}
+      {!expanded && isAgent && subMeta && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 12px", flexWrap: "wrap" }}>
+          <SubagentBadges meta={subMeta} showStatus />
+        </div>
+      )}
       {/* Agent: Watch button in collapsed state (only if running and we have an agentId) */}
       {!expanded && isAgent && !isDone && (
         <div style={{ padding: "2px 12px" }}>
@@ -2670,6 +2684,7 @@ function ToolCallBlock({
           sessionId={sessionId!}
           agentId={agentId!}
           isDone={isDone}
+          meta={subMeta}
           onClose={() => setShowAgentLog(false)}
         />
       )}
@@ -2696,6 +2711,7 @@ function ToolCallBlock({
                   {!!input.run_in_background && (
                     <span style={{ fontSize: "var(--conv-font-xs, 10px)", background: "var(--bg-hover)", color: "var(--text-muted)", borderRadius: 3, padding: "1px 6px" }}>background</span>
                   )}
+                  <SubagentBadges meta={subMeta} showStatus />
                   {isAgent && (
                     <button
                       onClick={e => { e.stopPropagation(); setShowAgentLog(true); }}
@@ -2947,6 +2963,132 @@ function TurnUsage({ model, usage }: { model?: string; usage?: RawUsage }) {
           {created > 0 && <span style={{ color: "var(--text-faintest)" }} title="cache write">+{fmt(created)}</span>}
           <span title="output tokens">·↓</span><span style={{ color: "var(--text-muted)" }}>{fmt(out)}</span>
         </span>
+      )}
+    </div>
+  );
+}
+
+// ── Sub-agent metric badges ───────────────────────────────────────────────────
+
+function subStatusColor(status?: string): string {
+  return status === "failed" ? "var(--accent-red)"
+    : status === "running" ? "var(--accent-amber)"
+    : "var(--accent-green)";
+}
+
+function subShortModel(model?: string): string {
+  return model?.replace("claude-", "").replace(/-\d{8}$/, "") ?? "";
+}
+
+// SubagentBadges renders model / token / duration / tool-count chips for a
+// sub-agent, reused in the chat Task block, the modal header, and the overview
+// list. Renders nothing when meta is absent (older payloads / non-Claude tools).
+function SubagentBadges({ meta, showStatus = false }: { meta?: SubAgentMeta; showStatus?: boolean }) {
+  if (!meta) return null;
+  const model = subShortModel(meta.model);
+  const hasTokens = (meta.tokensIn ?? 0) > 0 || (meta.tokensOut ?? 0) > 0;
+  const cr = meta.tokensCacheRead ?? 0;
+  const chip: React.CSSProperties = { fontSize: "var(--conv-font-xs, 10px)", fontFamily: "monospace", color: "var(--text-faint)", whiteSpace: "nowrap" };
+  return (
+    <>
+      {showStatus && meta.status && (
+        <span title={meta.status} style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: subStatusColor(meta.status), display: "inline-block" }} />
+      )}
+      {model && (
+        <span style={{ fontSize: 10, color: "var(--text-faintest)", fontFamily: "monospace", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", flexShrink: 0 }}>{model}</span>
+      )}
+      {hasTokens && (
+        <span style={chip} title={`in ${meta.tokensIn ?? 0} / out ${meta.tokensOut ?? 0} tokens${cr ? ` · cache read ${cr}` : ""}`}>
+          <span title="input tokens">↑</span>{formatTokens(meta.tokensIn)}
+          <span title="output tokens"> ·↓</span>{formatTokens(meta.tokensOut)}
+        </span>
+      )}
+      {!!meta.durationSec && <span style={chip} title="duration">{formatDuration(meta.durationSec)}</span>}
+      {!!meta.toolUses && <span style={chip} title="tool calls">{meta.toolUses}🔧</span>}
+    </>
+  );
+}
+
+// SubagentOverview is a collapsible session-level bar listing every sub-agent
+// with its model / status / tokens / duration / tool-count, sortable, with each
+// row opening the existing SubAgentModal. It reuses the already-polled
+// `subagents` state (no extra request) and renders nothing when there are none.
+function SubagentOverview({ sessionId, subagents }: { sessionId: string; subagents: SubAgentMeta[] }) {
+  const [open, setOpen] = useState(false);
+  const [sortKey, setSortKey] = useState<"recency" | "tokens" | "duration" | "status">("recency");
+  const [openAgent, setOpenAgent] = useState<SubAgentMeta | null>(null);
+
+  const totalTokens = useMemo(
+    () => subagents.reduce((a, s) => a + (s.tokensIn ?? 0) + (s.tokensOut ?? 0), 0),
+    [subagents],
+  );
+  const runningCount = useMemo(() => subagents.filter(s => s.status === "running").length, [subagents]);
+
+  const sorted = useMemo(() => {
+    const toks = (s: SubAgentMeta) => (s.tokensIn ?? 0) + (s.tokensOut ?? 0);
+    const statusRank = (s: SubAgentMeta) => (s.status === "running" ? 0 : s.status === "failed" ? 1 : 2);
+    return [...subagents].sort((a, b) => {
+      switch (sortKey) {
+        case "tokens": return toks(b) - toks(a);
+        case "duration": return (b.durationSec ?? 0) - (a.durationSec ?? 0);
+        case "status": { const d = statusRank(a) - statusRank(b); return d !== 0 ? d : b.mtime - a.mtime; }
+        default: return b.mtime - a.mtime;
+      }
+    });
+  }, [subagents, sortKey]);
+
+  if (subagents.length === 0) return null;
+
+  return (
+    <div style={{ flexShrink: 0, background: "var(--bg-surface)", borderBottom: "1px solid var(--bg-hover)" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", padding: "5px 12px", cursor: "pointer", textAlign: "left", color: "var(--text-muted)", fontSize: 12 }}
+      >
+        <span style={{ fontSize: 10 }}>{open ? "▾" : "▸"}</span>
+        <span style={{ fontWeight: 600, color: "var(--text-secondary)" }}>Subagents ({subagents.length})</span>
+        <span style={{ fontFamily: "monospace", fontSize: 11 }}>· {formatTokens(totalTokens)} tok</span>
+        {runningCount > 0 && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "monospace", fontSize: 11, color: "var(--accent-amber)" }}>
+            · <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent-amber)", display: "inline-block" }} />{runningCount} running
+          </span>
+        )}
+      </button>
+      {open && (
+        <div style={{ maxHeight: "40vh", overflowY: "auto", borderTop: "1px solid var(--bg-hover)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 12px", fontSize: 10, color: "var(--text-faint)" }}>
+            <span>sort:</span>
+            {(["recency", "tokens", "duration", "status"] as const).map(k => (
+              <button
+                key={k}
+                onClick={() => setSortKey(k)}
+                style={{ background: sortKey === k ? "var(--bg-hover)" : "none", border: "1px solid " + (sortKey === k ? "var(--border)" : "transparent"), color: sortKey === k ? "var(--text-secondary)" : "var(--text-faint)", borderRadius: 3, padding: "1px 7px", cursor: "pointer", fontSize: 10, fontFamily: "monospace" }}
+              >{k}</button>
+            ))}
+          </div>
+          {sorted.map(s => (
+            <button
+              key={s.agentId}
+              onClick={() => setOpenAgent(s)}
+              title={s.outputPreview || s.description}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", background: "none", border: "none", borderTop: "1px solid var(--bg-base)", padding: "5px 12px", cursor: "pointer", textAlign: "left" }}
+            >
+              <span title={s.status} style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: subStatusColor(s.status), display: "inline-block" }} />
+              <span style={{ fontSize: 10, background: "var(--bg-hover)", color: "var(--text-secondary)", borderRadius: 3, padding: "1px 6px", fontFamily: "monospace", flexShrink: 0 }}>{s.agentType}</span>
+              <span style={{ fontSize: 12, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{s.description}</span>
+              <SubagentBadges meta={s} />
+            </button>
+          ))}
+        </div>
+      )}
+      {openAgent && (
+        <SubAgentModal
+          sessionId={sessionId}
+          agentId={openAgent.agentId}
+          isDone={openAgent.status !== "running"}
+          meta={openAgent}
+          onClose={() => setOpenAgent(null)}
+        />
       )}
     </div>
   );
@@ -3464,7 +3606,7 @@ const MessageEntry = React.memo(function MessageEntry({
   isActiveThinking = false,
   isNewCompact = false,
   sessionId,
-  subagentsByDesc,
+  subagentsByMeta,
   chatOnly = false,
   hideAuqDisplay = false,
   hideExitPlanBlock = false,
@@ -3478,7 +3620,7 @@ const MessageEntry = React.memo(function MessageEntry({
   isActiveThinking?: boolean;
   isNewCompact?: boolean;
   sessionId?: string;
-  subagentsByDesc?: Map<string, string>;
+  subagentsByMeta?: Map<string, SubAgentMeta>;
   chatOnly?: boolean;
   hideAuqDisplay?: boolean;
   hideExitPlanBlock?: boolean;
@@ -3713,8 +3855,9 @@ const MessageEntry = React.memo(function MessageEntry({
         } else {
           const result = toolResults.get(b.id);
           const desc = b.name === "Agent" ? String((b.input as Record<string, unknown>)?.description ?? "") : "";
-          const agentId = desc && subagentsByDesc ? subagentsByDesc.get(desc) : undefined;
-          segments.push(<ToolCallBlock key={i} block={b} result={result} sessionId={sessionId} agentId={agentId} />);
+          const subMeta = desc && subagentsByMeta ? subagentsByMeta.get(desc) : undefined;
+          const agentId = subMeta?.agentId;
+          segments.push(<ToolCallBlock key={i} block={b} result={result} sessionId={sessionId} agentId={agentId} subMeta={subMeta} />);
         }
       }
     }
@@ -4026,6 +4169,8 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   const registerLostRef = useRef<(text: string, sentAt: number) => void>(() => {});
   const [newCompactUuids, setNewCompactUuids] = useState<Set<string>>(new Set());
   const [subagents, setSubagents] = useState<SubAgentMeta[]>([]);
+  // Backgrounded tab → tear down the live polls (re-fetches + resumes on return).
+  const pageVisible = usePageVisible();
   // Pending image uploads — attached to the next prompt and rendered as
   // chips above the textarea. Cleared on send. Holds the upload response
   // so we have the absolute path that gets injected as `@<path>`.
@@ -4101,9 +4246,12 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
 
   // ── Derived data ─────────────────────────────────────────────────────────
 
-  const subagentsByDesc = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const s of subagents) map.set(s.description, s.agentId);
+  const subagentsByMeta = useMemo(() => {
+    const map = new Map<string, SubAgentMeta>();
+    // Last writer wins, so the newest sub-agent for a repeated description (the
+    // list is mtime-desc) is overwritten by older ones — iterate oldest→newest
+    // so the freshest entry sticks.
+    for (let i = subagents.length - 1; i >= 0; i--) map.set(subagents[i].description, subagents[i]);
     return map;
   }, [subagents]);
 
@@ -4314,7 +4462,26 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   }, [messages]);
 
   const displayEntries = useMemo(() => {
-    const filtered = messages.filter((m) => {
+    // Pre-index the two entry kinds the queued-prompt dedup below cross-references,
+    // in a single O(n) pass. Previously the attachment and queue-operation filter
+    // branches each rescanned the WHOLE `messages` array per matching entry
+    // (plus an indexOf), making the filter O(n²) on transcripts with many queued
+    // prompts. enqueues keeps raw + trimmed content (merge dedup compares raw,
+    // attachment dedup compares trimmed); userTexts keeps trimmed promotion text.
+    const enqueues: { idx: number; raw: string; content: string }[] = [];
+    const userTexts: { idx: number; text: string }[] = [];
+    messages.forEach((mm, idx) => {
+      const r = mm as unknown as Record<string, unknown>;
+      if (r.type === "queue-operation" && r.operation === "enqueue" && typeof r.content === "string") {
+        enqueues.push({ idx, raw: r.content as string, content: (r.content as string).trim() });
+      } else if (mm.type === "user" && mm.message) {
+        const uc = (mm.message as Record<string, unknown>).content;
+        const text = typeof uc === "string" ? uc :
+          Array.isArray(uc) ? uc.filter((b): b is Record<string, unknown> => typeof b === "object" && b !== null && (b as Record<string, unknown>).type === "text").map((b) => String(b.text || "")).join("") : "";
+        userTexts.push({ idx, text: text.trim() });
+      }
+    });
+    const filtered = messages.filter((m, mIdx) => {
       if (m.isMeta) return false;
       // Codex-specific top-level types — synthesized by backend from rollout JSONL.
       // Pass them through unchanged; MessageEntry has dedicated render branches.
@@ -4363,13 +4530,8 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
         // bubble. Prefer the earlier queue-operation; suppress the attachment.
         const prompt = String(att.prompt ?? "").trim();
         if (prompt) {
-          for (const n of messages) {
-            if (n === m) continue;
-            const r = n as unknown as Record<string, unknown>;
-            if (r.type === "queue-operation" && r.operation === "enqueue" && typeof r.content === "string") {
-              const c = (r.content as string).trim();
-              if (c === prompt || c.includes(prompt)) return false;
-            }
+          for (const e of enqueues) {
+            if (e.content === prompt || e.content.includes(prompt)) return false;
           }
         }
         return true;
@@ -4388,15 +4550,13 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
         if (r.operation !== "enqueue" || typeof r.content !== "string") return false;
         const content = r.content.trim();
         if (!content) return false;
-        const idx = messages.indexOf(m);
+        const idx = mIdx;
         // Queue-merge dedup: if a LATER queue-op enqueue's content already contains
         // this one (Claude CLI joins consecutive enqueues with \r), drop this one
-        // so the same words don't render twice.
-        for (let j = idx + 1; j < messages.length; j++) {
-          const n = messages[j] as unknown as Record<string, unknown>;
-          if (n.type === "queue-operation" && n.operation === "enqueue" && typeof n.content === "string") {
-            if (n.content.includes(content)) return false;
-          }
+        // so the same words don't render twice. (Compares raw later content, as
+        // the original did.)
+        for (const e of enqueues) {
+          if (e.idx > idx && e.raw.includes(content)) return false;
         }
         // Promotion dedup: when Claude CLI promotes a queue-op to a regular user-type
         // entry, that entry has IDENTICAL content. Scan ALL following user-type entries
@@ -4405,14 +4565,8 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
         // summaries ("This session is being continued from…") incidentally contain old
         // queue-op text as substring but are NOT promotions, and treating them as such
         // silently drops legitimate user prompts.
-        for (let j = idx + 1; j < messages.length; j++) {
-          const n = messages[j] as unknown as Record<string, unknown>;
-          if (n.type !== "user") continue;
-          const um = n.message as Record<string, unknown> | undefined;
-          const uc = um?.content;
-          const text = typeof uc === "string" ? uc :
-            Array.isArray(uc) ? uc.filter((b): b is Record<string, unknown> => typeof b === "object" && b !== null && (b as Record<string, unknown>).type === "text").map((b) => String(b.text || "")).join("") : "";
-          if (text.trim() === content) return false;
+        for (const u of userTexts) {
+          if (u.idx > idx && u.text === content) return false;
         }
         return true;
       }
@@ -4756,6 +4910,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
   // stops — the log-linking map stays current without polling a dormant
   // session every 10s.
   useEffect(() => {
+    if (!pageVisible) return; // hidden tab: stop polling subagents entirely
     let cancelled = false;
     const fetch = async () => {
       try {
@@ -4766,7 +4921,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
     fetch();
     const id = setInterval(fetch, isStreaming ? 10_000 : 60_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [sessionId, isStreaming]);
+  }, [sessionId, isStreaming, pageVisible]);
 
   // "Active" = any state where new content can land continuously and must be
   // shown promptly: streaming, compacting, a pending AUQ/approval, or an
@@ -4783,9 +4938,12 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
     // fixed (LIVE_TAIL) — it never grows, so polling stays cheap on long sessions.
     lastTokenRef.current = undefined;
     fetchMessages(LIVE_TAIL);
+    // Hidden tab: do the one catch-up fetch above (so returning to a foregrounded
+    // tab shows fresh content immediately) but install no recurring interval.
+    if (!pageVisible) return;
     pollRef.current = setInterval(() => fetchMessages(LIVE_TAIL), pollActive ? POLL_MS : IDLE_POLL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchMessages, pollActive]);
+  }, [fetchMessages, pollActive, pageVisible]);
 
   // Load one bounded older-history page and PREPEND it. Fetches the raw slice
   // [newOffset, oldestOffset) via the static offset endpoint (no token/delta/
@@ -5163,6 +5321,9 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
         </div>
       )}
 
+      {/* Session-level sub-agent overview (collapsible) */}
+      <SubagentOverview sessionId={sessionId} subagents={subagents} />
+
       {/* Scroll area */}
       <div
         ref={scrollRef}
@@ -5265,7 +5426,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
                         isActiveThinking={isActiveThinking}
                         isNewCompact={newCompactUuids.has(entry.uuid || "")}
                         sessionId={sessionId}
-                        subagentsByDesc={subagentsByDesc}
+                        subagentsByMeta={subagentsByMeta}
                         chatOnly={chatOnly}
                         hideExitPlanBlock
                         planPathByExitBlockId={planPathByExitBlockId}
@@ -5309,7 +5470,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
                         isActiveThinking={isActiveThinking}
                         isNewCompact={newCompactUuids.has(entry.uuid || "")}
                         sessionId={sessionId}
-                        subagentsByDesc={subagentsByDesc}
+                        subagentsByMeta={subagentsByMeta}
                         chatOnly={chatOnly}
                         hideAuqDisplay
                         planPathByExitBlockId={planPathByExitBlockId}
@@ -5332,7 +5493,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
                         isActiveThinking={isActiveThinking}
                         isNewCompact={newCompactUuids.has(entry.uuid || "")}
                         sessionId={sessionId}
-                        subagentsByDesc={subagentsByDesc}
+                        subagentsByMeta={subagentsByMeta}
                         chatOnly={chatOnly}
                         planPathByExitBlockId={planPathByExitBlockId}
                         onRewindMessage={handleRewindMessage}
@@ -5355,7 +5516,7 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
                   isActiveThinking={isActiveThinking}
                   isNewCompact={newCompactUuids.has(entry.uuid || "")}
                   sessionId={sessionId}
-                  subagentsByDesc={subagentsByDesc}
+                  subagentsByMeta={subagentsByMeta}
                   chatOnly={chatOnly}
                   planPathByExitBlockId={planPathByExitBlockId}
                   onRewindMessage={handleRewindMessage}

@@ -166,3 +166,46 @@ func TestShadowRestore(t *testing.T) {
 		t.Errorf("after go-back b.txt should be restored, got %q", got)
 	}
 }
+
+// TestShadowCommitDetail exercises the single-pass cat-file batch reader across
+// the three blob cases: modified (both old+new present), added (old missing),
+// and deleted (new missing).
+func TestShadowCommitDetail(t *testing.T) {
+	s, gitDir, workdir := shadowFixture(t)
+	ctx := context.Background()
+
+	// Point 1: a.txt="one" (from fixture) + del.txt to be removed later.
+	swrite(t, filepath.Join(workdir, "del.txt"), "to be deleted")
+	if _, _, err := s.ShadowSnapshot(ctx, gitDir, workdir, "main", "v1", "tester"); err != nil {
+		t.Fatalf("snapshot v1: %v", err)
+	}
+
+	// Point 2: modify a.txt, add add.txt, delete del.txt.
+	swrite(t, filepath.Join(workdir, "a.txt"), "one\ntwo\n")
+	swrite(t, filepath.Join(workdir, "add.txt"), "brand new")
+	if err := os.Remove(filepath.Join(workdir, "del.txt")); err != nil {
+		t.Fatal(err)
+	}
+	hash, _, err := s.ShadowSnapshot(ctx, gitDir, workdir, "main", "v2", "tester")
+	if err != nil {
+		t.Fatalf("snapshot v2: %v", err)
+	}
+
+	det, err := s.ShadowCommitDetail(ctx, gitDir, workdir, hash)
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	byPath := map[string]FileVersion{}
+	for _, f := range det.Files {
+		byPath[f.Path] = f
+	}
+	if f := byPath["a.txt"]; f.OldContent != "one" || f.NewContent != "one\ntwo\n" {
+		t.Errorf("a.txt old=%q new=%q", f.OldContent, f.NewContent)
+	}
+	if f := byPath["add.txt"]; f.OldContent != "" || f.NewContent != "brand new" {
+		t.Errorf("add.txt old=%q new=%q (want old empty)", f.OldContent, f.NewContent)
+	}
+	if f := byPath["del.txt"]; f.OldContent != "to be deleted" || f.NewContent != "" {
+		t.Errorf("del.txt old=%q new=%q (want new empty)", f.OldContent, f.NewContent)
+	}
+}

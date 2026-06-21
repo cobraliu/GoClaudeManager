@@ -276,27 +276,28 @@ func conversationJSONL(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pass 1: count non-empty lines.
-	total, err := countNonEmptyLines(jsonlPath)
+	// Single forward scan yields both the total line count and the requested
+	// [offset, offset+pageSize) window. Only the rare out-of-range case (the
+	// caller asked for a page past the end, e.g. with a stale total) pays a
+	// second targeted read after clamping — the common in-range request is one
+	// pass over the file instead of the previous two.
+	offset := page * pageSize
+	pageLines, total, err := readJSONLPage(jsonlPath, offset, pageSize)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	// Clamp page to valid range.
-	if total > 0 && page*pageSize >= total {
+	if total > 0 && offset >= total {
 		page = int(math.Ceil(float64(total)/float64(pageSize))) - 1
 		if page < 0 {
 			page = 0
 		}
-	}
-	offset := page * pageSize
-
-	// Pass 2: read the page (forward scan).
-	pageLines, err := readPageLines(jsonlPath, offset, pageSize, total)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+		offset = page * pageSize
+		pageLines, _, err = readJSONLPage(jsonlPath, offset, pageSize)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -307,54 +308,35 @@ func conversationJSONL(d Deps, w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func countNonEmptyLines(path string) (int, error) {
+// readJSONLPage scans the file once, returning the [offset, offset+pageSize)
+// window of non-empty lines (trailing \r\n stripped) and the total non-empty
+// line count. Capturing both in a single pass avoids a separate counting scan;
+// the window stops growing at pageSize but the scan continues to finish the
+// count (needed for pagination), so memory stays bounded to pageSize lines.
+func readJSONLPage(path string, offset, pageSize int) ([]string, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	total := 0
-	sc := newJSONLScanner(f)
-	for sc.Scan() {
-		if strings.TrimSpace(sc.Text()) != "" {
-			total++
-		}
-	}
-	return total, sc.Err()
-}
-
-// readPageLines returns the [offset, offset+pageSize) window of non-empty lines
-// (trailing \r\n stripped), matching the Python head/tail strategy's output.
-func readPageLines(path string, offset, pageSize, total int) ([]string, error) {
-	if total == 0 || offset >= total {
-		return []string{}, nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 
 	out := []string{}
-	idx := 0
+	total := 0
 	sc := newJSONLScanner(f)
 	for sc.Scan() {
 		line := sc.Text()
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if idx >= offset {
+		if total >= offset && len(out) < pageSize {
 			out = append(out, strings.TrimRight(line, "\n\r"))
-			if len(out) >= pageSize {
-				break
-			}
 		}
-		idx++
+		total++
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // newJSONLScanner is a large-buffer line scanner for potentially huge JSONL
@@ -377,7 +359,7 @@ func availableClaudeSessions(d Deps, w http.ResponseWriter, r *http.Request) {
 	case "cursor":
 		allSessions = jsonl.ListCursorLocalSessions(s.Cwd)
 	default:
-		allSessions = jsonl.ListProjectSessionIDs(s.Cwd)
+		allSessions = d.JSONL.ListProjectSessionIDs(s.Cwd)
 	}
 
 	occupied, _ := d.Store.GetAllAgentSessionIDs(s.ID)
@@ -405,10 +387,10 @@ func getSubagents(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	chatSID := resolveChatSID(d, s)
 	if chatSID == "" {
-		writeJSON(w, http.StatusOK, []jsonl.Subagent{})
+		writeJSON(w, http.StatusOK, []jsonl.SubagentSummary{})
 		return
 	}
-	writeJSON(w, http.StatusOK, jsonl.ListSubagents(chatSID, s.Cwd))
+	writeJSON(w, http.StatusOK, d.JSONL.ListSubagentSummaries(chatSID, s.Cwd))
 }
 
 func getSubagentContent(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -890,7 +872,7 @@ func browseExternalSessions(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, jsonl.ListAllClaudeSessionsGlobal(occupied))
+	writeJSON(w, http.StatusOK, d.JSONL.ListAllClaudeSessionsGlobal(occupied))
 }
 
 func browseCursorSessions(d Deps, w http.ResponseWriter, r *http.Request) {

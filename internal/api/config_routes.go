@@ -534,14 +534,19 @@ func runWithTimeout(cmd *exec.Cmd, d time.Duration) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	done := make(chan error, 1)
+	done := make(chan error, 1) // buffered: the reaper can always send and exit
 	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
 		return err
 	case <-time.After(d):
 		_ = cmd.Process.Kill()
-		<-done
+		// Bounded reap: don't block forever if Wait wedges. done is buffered, so
+		// the goroutine still completes its send and exits once Kill takes hold.
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
 		return os.ErrDeadlineExceeded
 	}
 }

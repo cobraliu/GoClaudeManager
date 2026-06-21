@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // This file ports the "global session listing", "subagents", and
@@ -98,7 +99,11 @@ func groupAndSort(byCwd map[string][]GlobalSession) []GlobalSessionGroup {
 // ListAllClaudeSessionsGlobal scans every ~/.claude/projects dir and returns
 // sessions grouped by cwd, excluding any whose agent_session_id is occupied.
 // Port of list_all_claude_sessions_global.
-func ListAllClaudeSessionsGlobal(occupied map[string]bool) []GlobalSessionGroup {
+//
+// Enrichment goes through the incremental Cache: a repeat browse only reparses
+// the JSONLs that actually grew since last time (others are stat-only), instead
+// of a full re-read of every transcript on the machine on every request.
+func (c *Cache) ListAllClaudeSessionsGlobal(occupied map[string]bool) []GlobalSessionGroup {
 	base := projectsDir()
 	if base == "" {
 		return []GlobalSessionGroup{}
@@ -151,7 +156,7 @@ func ListAllClaudeSessionsGlobal(occupied map[string]bool) []GlobalSessionGroup 
 			if err != nil {
 				continue
 			}
-			data, _ := EnrichSession(stem, cwd)
+			data := c.Enrich(jsonlPath)
 			prompts := data.Prompts
 			if prompts == nil {
 				prompts = []string{}
@@ -245,8 +250,9 @@ type LocalSession struct {
 }
 
 // ListProjectSessionIDs returns all JSONL session stems in the Claude project
-// dir for cwd, newest first. Port of list_project_session_ids.
-func ListProjectSessionIDs(cwd string) []LocalSession {
+// dir for cwd, newest first. Port of list_project_session_ids. Enrichment runs
+// through the incremental Cache (see ListAllClaudeSessionsGlobal).
+func (c *Cache) ListProjectSessionIDs(cwd string) []LocalSession {
 	base := projectsDir()
 	if base == "" {
 		return []LocalSession{}
@@ -274,7 +280,7 @@ func ListProjectSessionIDs(cwd string) []LocalSession {
 			if err != nil {
 				continue
 			}
-			data, _ := EnrichSession(stem, cwd)
+			data := c.Enrich(filepath.Join(projPath, fe.Name()))
 			results = append(results, LocalSession{
 				AgentSessionID: stem,
 				Mtime:          mtimeSecs(fi),
@@ -445,6 +451,138 @@ func GetSubagentLines(claudeSessionID, cwd, agentID string, fromLine int) Subage
 		lines = []string{}
 	}
 	return SubagentLines{Lines: lines, Total: total}
+}
+
+// ── Subagent summaries (enriched) ────────────────────────────────────────────
+
+// SubagentSummary is a strict superset of Subagent (same four JSON fields with
+// identical tags, so older clients keep working) enriched with per-sub-agent
+// metrics derived from the agent-<id>.jsonl transcript.
+type SubagentSummary struct {
+	AgentID     string  `json:"agentId"`
+	Description string  `json:"description"`
+	AgentType   string  `json:"agentType"`
+	Mtime       float64 `json:"mtime"`
+
+	Model            string  `json:"model,omitempty"`
+	Status           string  `json:"status"` // running | done | failed
+	TokensIn         int     `json:"tokensIn"`
+	TokensOut        int     `json:"tokensOut"`
+	TokensCacheRead  int     `json:"tokensCacheRead"`
+	TokensCacheWrite int     `json:"tokensCacheWrite"`
+	ToolUses         int     `json:"toolUses"`
+	StartedTs        float64 `json:"startedTs,omitempty"`
+	EndedTs          float64 `json:"endedTs,omitempty"`
+	DurationSec      float64 `json:"durationSec"`
+	OutputPreview    string  `json:"outputPreview,omitempty"`
+}
+
+// subagentStaleSec is how long a sub-agent transcript must be untouched before
+// a terminal stop_reason is treated as "done" — the fallback used only when the
+// parent transcript has no tool_result for the sub-agent's Task yet.
+const subagentStaleSec = 90
+
+// ListSubagentSummaries is the enriched, cache-backed counterpart of
+// ListSubagents. It reuses the incremental Cache so a poll over a session with
+// many sub-agent files only reparses files that actually grew (others are
+// stat-only). Returns a non-nil (possibly empty) slice.
+func (c *Cache) ListSubagentSummaries(claudeSessionID, cwd string) []SubagentSummary {
+	parentPath := FindSessionJSONL(claudeSessionID, cwd)
+	if parentPath == "" {
+		return []SubagentSummary{}
+	}
+	dir := filepath.Join(filepath.Dir(parentPath), claudeSessionID, "subagents")
+	if !isDir(dir) {
+		return []SubagentSummary{}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return []SubagentSummary{}
+	}
+
+	// Authoritative status source: the parent's Task tool_result map.
+	parentResults := c.parentToolResults(parentPath)
+	now := float64(time.Now().Unix())
+
+	var metaNames []string
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasPrefix(n, "agent-") && strings.HasSuffix(n, ".meta.json") {
+			metaNames = append(metaNames, n)
+		}
+	}
+	sort.Strings(metaNames)
+
+	results := []SubagentSummary{}
+	for _, name := range metaNames {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			Description string `json:"description"`
+			AgentType   string `json:"agentType"`
+			ToolUseID   string `json:"toolUseId"`
+		}
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			continue
+		}
+		agentID := strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".meta.json")
+		jsonlFile := filepath.Join(dir, "agent-"+agentID+".jsonl")
+		var mtime float64
+		if fi, err := os.Stat(jsonlFile); err == nil {
+			mtime = mtimeSecs(fi)
+		}
+
+		st := c.subagentSummary(jsonlFile)
+		dur := st.lastTs - st.firstTs
+		if dur < 0 {
+			dur = 0
+		}
+		results = append(results, SubagentSummary{
+			AgentID:          agentID,
+			Description:      meta.Description,
+			AgentType:        meta.AgentType,
+			Mtime:            mtime,
+			Model:            st.model,
+			Status:           subagentStatus(parentResults, meta.ToolUseID, st, mtime, now),
+			TokensIn:         st.tokensIn,
+			TokensOut:        st.tokensOut,
+			TokensCacheRead:  st.tokensCacheRead,
+			TokensCacheWrite: st.tokensCacheWrite,
+			ToolUses:         st.toolUses,
+			StartedTs:        st.firstTs,
+			EndedTs:          st.lastTs,
+			DurationSec:      dur,
+			OutputPreview:    st.outputPreview(),
+		})
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Mtime > results[j].Mtime
+	})
+	return results
+}
+
+// subagentStatus resolves a sub-agent's lifecycle state. The parent transcript's
+// tool_result for the Task (keyed by meta.json toolUseId) is authoritative; the
+// mtime-staleness heuristic only applies when that result hasn't appeared yet.
+func subagentStatus(parentResults map[string]bool, toolUseID string, st *subagentState, mtime, now float64) string {
+	if toolUseID != "" {
+		if isErr, ok := parentResults[toolUseID]; ok {
+			if isErr {
+				return "failed"
+			}
+			return "done"
+		}
+	}
+	if st.sawError || st.lastStop == "error" {
+		return "failed"
+	}
+	if mtime > 0 && now-mtime > subagentStaleSec &&
+		(st.lastStop == "end_turn" || st.lastStop == "stop_sequence") {
+		return "done"
+	}
+	return "running"
 }
 
 // ── Raw-messages pagination ─────────────────────────────────────────────────

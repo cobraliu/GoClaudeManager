@@ -513,4 +513,16 @@ func TestIsModelSwitchDialog(t *testing.T) {
 	if IsModelSwitchDialog("") {
 		t.Errorf("empty screen must not match")
 	}
+
+	// Regression: an AskUserQuestion whose first option renders as "❯ 1. …" must
+	// NOT be mistaken for a model dialog even when a model-header substring sits
+	// within 12 lines above it (model-themed question, or residual /model text).
+	// Otherwise the status loop auto-presses Enter and pre-answers the AUQ with
+	// option 1, destroying the user's custom answer.
+	auqNearModelText := "  Set model to Fable 5 (done)\n" +
+		"  ☐ Pick deployment target\n  Which environment should I deploy to?\n\n" +
+		"  ❯ 1. Production\n    2. Staging\n    3. Type something.\n\n  Enter to select\n"
+	if IsModelSwitchDialog(auqNearModelText) {
+		t.Errorf("AUQ widget must NOT be detected as a model-switch dialog")
+	}
 }

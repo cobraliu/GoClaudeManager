@@ -452,3 +452,163 @@ func TestReadRawMessagesTailLargeLines(t *testing.T) {
 		t.Errorf("large line truncated: %d bytes", len(win[0]))
 	}
 }
+
+// ── Subagent summaries ───────────────────────────────────────────────────────
+
+func writeFile(t *testing.T, p, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+}
+
+func TestListSubagentSummaries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/proj/x"
+	sid := "sess-1"
+	base := filepath.Join(home, ".claude", "projects", "-proj-x")
+
+	// Parent transcript: a Task tool_use for each sub-agent, plus tool_results
+	// closing "done" (ok) and "fail" (is_error). "run" has no result yet.
+	parent := []string{
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:00.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_done","name":"Task","input":{}},{"type":"tool_use","id":"toolu_fail","name":"Task","input":{}},{"type":"tool_use","id":"toolu_run","name":"Task","input":{}}]}}`,
+		`{"type":"user","timestamp":"2024-01-01T10:05:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_done","content":"ok"}]}}`,
+		`{"type":"user","timestamp":"2024-01-01T10:06:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_fail","is_error":true,"content":"boom"}]}}`,
+	}
+	writeFile(t, filepath.Join(base, sid+".jsonl"), joinLines(parent))
+
+	subDir := filepath.Join(base, sid, "subagents")
+
+	// done: two assistant lines → summed usage; final end_turn.
+	writeFile(t, filepath.Join(subDir, "agent-done.meta.json"),
+		`{"agentType":"general-purpose","description":"do the thing","toolUseId":"toolu_done"}`)
+	writeFile(t, filepath.Join(subDir, "agent-done.jsonl"), joinLines([]string{
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:10.000Z","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":5,"cache_creation_input_tokens":200,"cache_read_input_tokens":10},"content":[{"type":"text","text":"working"},{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}`,
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:40.000Z","message":{"role":"assistant","model":"claude-opus-4-8","stop_reason":"end_turn","usage":{"input_tokens":50,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"text","text":"final output"}]}}`,
+	}))
+
+	// fail: parent tool_result is_error → failed regardless of transcript.
+	writeFile(t, filepath.Join(subDir, "agent-fail.meta.json"),
+		`{"agentType":"Explore","description":"explore","toolUseId":"toolu_fail"}`)
+	writeFile(t, filepath.Join(subDir, "agent-fail.jsonl"), joinLines([]string{
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:10.000Z","message":{"role":"assistant","model":"claude-haiku-4-5","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"text","text":"partial"}]}}`,
+	}))
+
+	// run: no parent result, fresh mtime → running.
+	writeFile(t, filepath.Join(subDir, "agent-run.meta.json"),
+		`{"agentType":"Plan","description":"plan it","toolUseId":"toolu_run"}`)
+	writeFile(t, filepath.Join(subDir, "agent-run.jsonl"), joinLines([]string{
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:10.000Z","message":{"role":"assistant","model":"claude-opus-4-8","stop_reason":"tool_use","usage":{"input_tokens":7,"output_tokens":3},"content":[{"type":"tool_use","id":"t2","name":"Grep","input":{}}]}}`,
+	}))
+
+	c := NewCache()
+	got := c.ListSubagentSummaries(sid, cwd)
+	if len(got) != 3 {
+		t.Fatalf("got %d summaries, want 3", len(got))
+	}
+	byID := map[string]SubagentSummary{}
+	for _, s := range got {
+		byID[s.AgentID] = s
+	}
+
+	done := byID["done"]
+	if done.Status != "done" {
+		t.Errorf("done.Status = %q, want done", done.Status)
+	}
+	if done.Model != "claude-opus-4-8" {
+		t.Errorf("done.Model = %q", done.Model)
+	}
+	if done.TokensIn != 150 || done.TokensOut != 25 || done.TokensCacheWrite != 200 || done.TokensCacheRead != 10 {
+		t.Errorf("done tokens in/out/cw/cr = %d/%d/%d/%d, want 150/25/200/10",
+			done.TokensIn, done.TokensOut, done.TokensCacheWrite, done.TokensCacheRead)
+	}
+	if done.ToolUses != 1 {
+		t.Errorf("done.ToolUses = %d, want 1", done.ToolUses)
+	}
+	if done.OutputPreview != "final output" {
+		t.Errorf("done.OutputPreview = %q", done.OutputPreview)
+	}
+	if done.DurationSec != 30 {
+		t.Errorf("done.DurationSec = %v, want 30", done.DurationSec)
+	}
+
+	if byID["fail"].Status != "failed" {
+		t.Errorf("fail.Status = %q, want failed", byID["fail"].Status)
+	}
+	if byID["run"].Status != "running" {
+		t.Errorf("run.Status = %q, want running", byID["run"].Status)
+	}
+}
+
+func joinLines(lines []string) string {
+	out := ""
+	for _, l := range lines {
+		out += l + "\n"
+	}
+	return out
+}
+
+// TestCacheEviction verifies the TTL pass drops idle entries and the hard cap
+// trims the least-recently-accessed entries once the map exceeds the limit.
+func TestCacheEviction(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name string) string {
+		p := filepath.Join(dir, name)
+		writeLines(t, p, []string{userLine})
+		return p
+	}
+
+	// TTL pass: a stale entry is reclaimed; a fresh one survives.
+	c := NewCache()
+	stale := mk("stale.jsonl")
+	fresh := mk("fresh.jsonl")
+	c.Enrich(stale)
+	c.Enrich(fresh)
+
+	c.mu.Lock()
+	// Backdate the stale entry past the TTL and force a sweep next access.
+	c.entries[stale].lastAccess -= int64(cacheEntryTTL) + int64(cacheSweepEvery)
+	c.lastSweepNano = 0
+	c.mu.Unlock()
+
+	c.Enrich(fresh) // triggers a sweep
+	c.mu.Lock()
+	_, staleOK := c.entries[stale]
+	_, freshOK := c.entries[fresh]
+	c.mu.Unlock()
+	if staleOK {
+		t.Errorf("stale entry should have been TTL-evicted")
+	}
+	if !freshOK {
+		t.Errorf("fresh entry should survive")
+	}
+
+	// Hard cap: load > cacheMaxEntries entries, then confirm the map is trimmed
+	// to the cap (oldest dropped).
+	c2 := NewCache()
+	for i := 0; i < cacheMaxEntries+50; i++ {
+		c2.Enrich(mk("h" + itoa(i) + ".jsonl"))
+	}
+	c2.mu.Lock()
+	n := len(c2.entries)
+	c2.mu.Unlock()
+	if n > cacheMaxEntries {
+		t.Errorf("entries=%d exceeds hard cap %d", n, cacheMaxEntries)
+	}
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b []byte
+	for i > 0 {
+		b = append([]byte{byte('0' + i%10)}, b...)
+		i /= 10
+	}
+	return string(b)
+}

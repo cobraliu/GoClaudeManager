@@ -2023,6 +2023,38 @@ export interface SubAgentMeta {
   description: string;
   agentType: string;
   mtime: number;
+  // Enriched fields (backend ListSubagentSummaries). All optional so older
+  // payloads and non-Claude tools keep parsing.
+  model?: string;
+  status?: "running" | "done" | "failed";
+  tokensIn?: number;
+  tokensOut?: number;
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
+  toolUses?: number;
+  startedTs?: number;
+  endedTs?: number;
+  durationSec?: number;
+  outputPreview?: string;
+}
+
+// formatTokens renders a token count compactly: 950 → "950", 12480 → "12.5k",
+// 1_921_638 → "1.9M".
+export function formatTokens(n: number | undefined): string {
+  const v = n ?? 0;
+  if (v < 1000) return String(v);
+  if (v < 1_000_000) return (v / 1000).toFixed(v < 10_000 ? 1 : 0) + "k";
+  return (v / 1_000_000).toFixed(1) + "M";
+}
+
+// formatDuration renders seconds as "45s", "3m12s", or "1h4m".
+export function formatDuration(sec: number | undefined): string {
+  const s = Math.max(0, Math.round(sec ?? 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60}m`;
 }
 
 export function getSubAgents(sessionId: string): Promise<SubAgentMeta[]> {
