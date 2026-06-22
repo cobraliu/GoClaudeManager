@@ -3978,6 +3978,9 @@ function _normalizePendingAuq(data: PendingAuqData): AskQuestion[] {
 
 interface Props {
   sessionId: string;
+  /** Display name of the session, shown bold in the bottom status banner so a
+   *  user juggling several open sessions can see which one they're typing into. */
+  sessionName?: string;
   tool?: "claude" | "cursor" | "codex";
   /** Codex transport, only meaningful when tool === "codex". "app_server" sessions
    *  have no tmux pane — the parent owns message submission via /codex-message and
@@ -4125,7 +4128,7 @@ function mergeRawDelta(prev: RawMessage[], delta: RawMessage[]): RawMessage[] | 
   return out;
 }
 
-export function ConversationPane({ sessionId, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, pendingPlanData, isWaitingForAuq = false, lostMessages, stopRef, refreshRef }: Props) {
+export function ConversationPane({ sessionId, sessionName, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, pendingPlanData, isWaitingForAuq = false, lostMessages, stopRef, refreshRef }: Props) {
   // Codex app-server transport: no tmux, no terminal WS. The parent (SessionsPage)
   // owns input via CodexChatInput → POST /codex-message. We must short-circuit the
   // WS attach effect AND the internal textarea or the user sees two input bars
@@ -5626,6 +5629,20 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
           Codex app-server mode has no terminal WS, so we gate on transport too — liveness is
           owned elsewhere (status poll + codex_appserver_manager). */}
       {!chatOnly && (wsStatus === "connected" || isCodexAppServer) && (() => {
+        // Bold session name pinned to the left of the centered status text, so a
+        // user with several sessions open can confirm which one they're in.
+        const nameTag = sessionName ? (
+          <span
+            title={sessionName}
+            style={{
+              position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)",
+              fontWeight: 700, color: "var(--text-body)", maxWidth: "45%",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}
+          >
+            {sessionName}
+          </span>
+        ) : null;
         if (isStreaming && isCompacting) {
           const pctNum = compactingProgress ? parseInt(compactingProgress, 10) : NaN;
           const hasPct = Number.isFinite(pctNum) && pctNum >= 0 && pctNum <= 100;
@@ -5638,8 +5655,9 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
               background: "color-mix(in srgb, var(--accent-orange, #d59f00) 14%, var(--bg-surface))",
               color: "var(--accent-orange, #d59f00)",
               padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-              fontSize: 11.5,
+              fontSize: 11.5, position: "relative",
             }}>
+              {nameTag}
               <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: "var(--accent-orange, #d59f00)", animation: "cursor-blink 1s step-end infinite" }} />
               <span>Compacting conversation…</span>
               <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", letterSpacing: 1, opacity: hasPct ? 1 : 0.55 }}>{bar}</span>
@@ -5666,7 +5684,9 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
               flexShrink: 0, borderTop: "1px solid var(--border)",
               background: "var(--bg-surface)",
               padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              position: "relative",
             }}>
+              {nameTag}
               <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: "var(--accent-blue, #58a6ff)", animation: "cursor-blink 1s step-end infinite" }} />
               <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{agentDisplayName} is responding…</span>
               <button
@@ -5685,15 +5705,19 @@ export function ConversationPane({ sessionId, tool, codexTransport, isStreaming,
           );
         }
         // Idle — faint state so users can see the session is alive but waiting for input.
+        // The dimming is applied to the idle content only, so the bold name stays legible.
         return (
           <div style={{
             flexShrink: 0, borderTop: "1px solid var(--border)",
             background: "var(--bg-surface)",
             padding: "4px 12px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            opacity: 0.6,
+            position: "relative",
           }}>
-            <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", border: "1px solid var(--text-faint, #6e7681)" }} />
-            <span style={{ fontSize: 11, color: "var(--text-faint, #6e7681)" }}>Idle · ready for input</span>
+            {nameTag}
+            <span style={{ display: "flex", alignItems: "center", gap: 8, opacity: 0.6 }}>
+              <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", border: "1px solid var(--text-faint, #6e7681)" }} />
+              <span style={{ fontSize: 11, color: "var(--text-faint, #6e7681)" }}>Idle · ready for input</span>
+            </span>
           </div>
         );
       })()}
