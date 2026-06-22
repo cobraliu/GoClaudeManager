@@ -23,6 +23,7 @@ import (
 	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/status"
 	"github.com/loki/goclaudemanager/internal/store"
+	"github.com/loki/goclaudemanager/internal/procmon"
 	"github.com/loki/goclaudemanager/internal/sysmon"
 	"github.com/loki/goclaudemanager/internal/term"
 	"github.com/loki/goclaudemanager/internal/tmux"
@@ -43,6 +44,7 @@ type App struct {
 	Term     *term.Service
 	SDK      *sdktransport.Manager
 	Sysmon   *sysmon.Sampler
+	Procmon  *procmon.Sampler
 }
 
 // New opens the store and assembles the application.
@@ -101,6 +103,9 @@ func New() (*App, error) {
 	a.Snapshot = status.NewManager(st, tmuxClient, jsonlCache)
 	a.Snapshot.SDK = a.SDK
 	a.Sysmon = sysmon.NewSampler()
+	// procmon is on-demand (driven synchronously by the /processes endpoint),
+	// so — unlike Sysmon — it gets no background goroutine in Start.
+	a.Procmon = procmon.NewSampler()
 	return a, nil
 }
 
@@ -157,6 +162,7 @@ func (a *App) Handler() http.Handler {
 		Term:     a.Term,
 		SDK:      a.SDK,
 		Sysmon:   a.Sysmon,
+		Procmon:  a.Procmon,
 	}))
 	r.Mount("/ws", ws.Router(ws.Deps{Store: a.Store, Tmux: a.Tmux, Auth: a.Auth, Env: a.Env, Term: a.Term, SDK: a.SDK}))
 

@@ -1559,27 +1559,26 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
   const [shareModalSession, setShareModalSession] = useState<SessionMeta | null>(null);
 
   // Side-dock section visibility (per-session can be added later; for now global)
-  const [dockOpen, setDockOpen] = useState<{ auqs: boolean; tasks: boolean; goals: boolean }>(() => {
+  const [dockOpen, setDockOpen] = useState<{ auqs: boolean; tasks: boolean; goals: boolean; procs: boolean }>(() => {
     try {
       const raw = localStorage.getItem("dockOpen");
       if (raw) {
         const p = JSON.parse(raw);
-        return { auqs: !!p.auqs, tasks: !!p.tasks, goals: !!p.goals };
+        return { auqs: !!p.auqs, tasks: !!p.tasks, goals: !!p.goals, procs: !!p.procs };
       }
     } catch { /* ignore */ }
-    return { auqs: false, tasks: false, goals: false };
+    return { auqs: false, tasks: false, goals: false, procs: false };
   });
-  const setDockSection = (key: "auqs" | "tasks" | "goals", value: boolean) => {
+  const setDockSection = (key: "auqs" | "tasks" | "goals" | "procs", value: boolean) => {
     setDockOpen(() => {
       // Exclusive: opening one section closes all others.
-      const next = value
-        ? { auqs: false, tasks: false, goals: false, [key]: true }
-        : { auqs: false, tasks: false, goals: false };
+      const closed = { auqs: false, tasks: false, goals: false, procs: false };
+      const next = value ? { ...closed, [key]: true } : closed;
       try { localStorage.setItem("dockOpen", JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
   };
-  const anyDockOpen = dockOpen.auqs || dockOpen.tasks || dockOpen.goals;
+  const anyDockOpen = dockOpen.auqs || dockOpen.tasks || dockOpen.goals || dockOpen.procs;
   // Goals + tasks polled at page level so bottom buttons can reflect active state
   // even when the dock section is collapsed or hidden.
   const [dockTodos, setDockTodos] = useState<TodoItem[]>([]);
@@ -2772,8 +2771,17 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                   justifyContent: "flex-start",
                 } : null),
               }}>
-              {/* Group 1: Functional — Auqs / Tasks / Goals / Model */}
+              {/* Group 1: Functional — Procs / Auqs / Tasks / Goals / Model */}
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {activeSessionMeta && (
+                <button
+                  onClick={() => setDockSection("procs", !dockOpen.procs)}
+                  title="Show the live process tree (children + subagents) for this session"
+                  style={{ fontSize: 11, padding: "2px 8px", background: dockOpen.procs ? "rgba(88,166,255,0.15)" : "var(--bg-hover)", color: "var(--text-faint)", border: "1px solid " + (dockOpen.procs ? "rgba(88,166,255,0.3)" : "transparent"), borderRadius: 4, cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  Procs
+                </button>
+              )}
               {activeSessionMeta && isClaudeSession && (
                 <button
                   onClick={() => setDockSection("auqs", !dockOpen.auqs)}

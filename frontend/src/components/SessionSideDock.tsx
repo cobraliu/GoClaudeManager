@@ -1,20 +1,25 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
   listSessionAuqs,
+  getSessionProcesses,
   type AuqEntry,
   type Goal,
+  type ProcessInfo,
   type TodoItem,
   type TodoPlan,
 } from "../api/sessionApi";
+import { usePageVisible } from "../hooks/usePageVisible";
 
 const COLLAPSE_KEY = "sideDockCollapsed";
 const SORT_KEY = "auqsPanelSort";
+// Process tree is live resource data — poll fast while the panel is open.
+const PROCS_POLL_MS = 3000;
 // AUQ history is a dock-only view (the user-blocking AUQ prompt itself is
 // driven in real time by the status poll's tui_auq_data, not by this list), so
 // a slow refresh is fine and keeps request volume down.
 const AUQ_POLL_MS = 30000;
 
-type SectionKey = "auqs" | "tasks" | "goals";
+type SectionKey = "auqs" | "tasks" | "goals" | "procs";
 type SortOrder = "asc" | "desc";
 
 interface Props {
@@ -22,7 +27,7 @@ interface Props {
   sessionName: string;
   isCursor: boolean;
   /** Which sections are currently open (toggled by parent's bottom buttons). */
-  open: { auqs: boolean; tasks: boolean; goals: boolean };
+  open: { auqs: boolean; tasks: boolean; goals: boolean; procs: boolean };
   /** Closes a section entirely (parent flips its open flag off). */
   onClose: (key: SectionKey) => void;
   /** Todo items from the latest TodoWrite tool_use in the session JSONL. */
@@ -47,10 +52,11 @@ function loadCollapsed(): Record<SectionKey, boolean> {
         auqs: !!p.auqs,
         tasks: !!p.tasks,
         goals: !!p.goals,
+        procs: !!p.procs,
       };
     }
   } catch { /* ignore */ }
-  return { auqs: false, tasks: false, goals: false };
+  return { auqs: false, tasks: false, goals: false, procs: false };
 }
 
 function loadSort(): SortOrder {
@@ -99,7 +105,7 @@ export function SessionSideDock({
     });
   }, [open]);
 
-  const anyOpen = open.auqs || open.tasks || open.goals;
+  const anyOpen = open.auqs || open.tasks || open.goals || open.procs;
   if (!anyOpen) return null;
 
   return (
@@ -116,6 +122,14 @@ export function SessionSideDock({
       }}
     >
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        {open.procs && (
+          <ProcsSection
+            sessionId={sessionId}
+            collapsed={collapsed.procs}
+            onToggle={() => setSectionCollapsed("procs", !collapsed.procs)}
+            onClose={() => onClose("procs")}
+          />
+        )}
         {open.auqs && !isCursor && (
           <AuqsSection
             sessionId={sessionId}
@@ -194,6 +208,158 @@ function SectionHeader({
       >
         ✕
       </button>
+    </div>
+  );
+}
+
+/* ────────────────────────── Processes section ────────────────────────── */
+
+function fmtBytes(n: number): string {
+  if (n <= 0) return "0";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)}${u[i]}`;
+}
+
+function fmtUptime(sec: number): string {
+  if (sec <= 0) return "0s";
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (d > 0) return `${d}d${h}h`;
+  if (h > 0) return `${h}h${m}m`;
+  if (m > 0) return `${m}m${s}s`;
+  return `${s}s`;
+}
+
+function cpuColor(pct: number): string {
+  if (pct >= 80) return "#f87171";
+  if (pct >= 30) return "#fbbf24";
+  return "var(--accent-green)";
+}
+
+function ProcRow({ p }: { p: ProcessInfo }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = !!p.cmdline || !!p.stdout_file || !!p.stderr_file;
+  const logBlock = (label: string, file?: string, tail?: string[]) => {
+    if (!file) return null;
+    return (
+      <div style={{ marginTop: 6 }}>
+        <div style={{ fontSize: 10, color: "var(--text-faint)" }}>
+          {label}: <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", wordBreak: "break-all" }}>{file}</span>
+        </div>
+        {tail && tail.length > 0 && (
+          <pre style={{
+            margin: "3px 0 0", padding: "4px 6px", background: "var(--bg-base)",
+            border: "1px solid var(--border-subtle)", borderRadius: 3,
+            fontSize: 10.5, lineHeight: 1.45, color: "var(--text-muted)",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+            whiteSpace: "pre-wrap", wordBreak: "break-all",
+            maxHeight: 160, overflowY: "auto",
+          }}>{tail.join("\n")}</pre>
+        )}
+      </div>
+    );
+  };
+  return (
+    <div style={{ borderBottom: "1px solid var(--border-subtle)", padding: "5px 10px" }}>
+      <div
+        onClick={() => hasDetail && setExpanded((v) => !v)}
+        style={{ display: "flex", alignItems: "center", gap: 6, cursor: hasDetail ? "pointer" : "default" }}
+      >
+        <span style={{ fontSize: 9, color: "var(--text-faint)", width: 9, flexShrink: 0 }}>
+          {hasDetail ? (expanded ? "▼" : "▶") : ""}
+        </span>
+        <span style={{
+          fontWeight: 600, color: p.is_root ? "var(--accent-blue)" : "var(--text-body)",
+          fontSize: 11.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 130,
+        }} title={p.comm}>
+          {p.comm || "?"}{p.is_root ? " ·root" : ""}
+        </span>
+        <span style={{ fontSize: 10, color: "var(--text-faint)", fontFamily: "monospace", flexShrink: 0 }}>
+          {p.pid}
+        </span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 7, fontSize: 10, fontFamily: "monospace", flexShrink: 0 }}>
+          <span style={{ color: cpuColor(p.cpu_percent), fontWeight: 600 }} title="CPU% (100 = one core)">
+            {p.cpu_percent.toFixed(0)}%
+          </span>
+          <span style={{ color: "var(--text-secondary)" }} title={`RSS ${fmtBytes(p.rss_bytes)} · ${p.mem_percent.toFixed(1)}% of RAM`}>
+            {fmtBytes(p.rss_bytes)}
+          </span>
+          <span style={{ color: "var(--text-faint)" }} title="uptime">
+            {fmtUptime(p.uptime_seconds)}
+          </span>
+        </span>
+      </div>
+      {expanded && hasDetail && (
+        <div style={{ marginTop: 5, paddingLeft: 15 }}>
+          <div style={{
+            fontSize: 10.5, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+            color: "var(--text-secondary)", wordBreak: "break-all", whiteSpace: "pre-wrap", lineHeight: 1.4,
+          }}>{p.cmdline}</div>
+          {logBlock("stdout", p.stdout_file, p.stdout_tail)}
+          {logBlock("stderr", p.stderr_file, p.stderr_tail)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProcsSection({
+  sessionId, collapsed, onToggle, onClose,
+}: {
+  sessionId: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+}) {
+  const [procs, setProcs] = useState<ProcessInfo[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const pageVisible = usePageVisible();
+
+  const refresh = useCallback(async () => {
+    try {
+      const snap = await getSessionProcesses(sessionId, 30);
+      setProcs(snap.processes || []);
+    } catch { /* ignore */ }
+    finally { setLoaded(true); }
+  }, [sessionId]);
+
+  useEffect(() => {
+    refresh();
+    if (collapsed || !pageVisible) return;
+    const id = setInterval(refresh, PROCS_POLL_MS);
+    return () => clearInterval(id);
+  }, [refresh, collapsed, pageVisible]);
+
+  // Root pinned on top, then by CPU% desc.
+  const sorted = [...procs].sort((a, b) =>
+    (b.is_root ? 1 : 0) - (a.is_root ? 1 : 0) || b.cpu_percent - a.cpu_percent
+  );
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--border)" }}>
+      <SectionHeader
+        title="Procs"
+        badge={loaded ? `${procs.length}` : ""}
+        collapsed={collapsed}
+        onToggle={onToggle}
+        onClose={onClose}
+      />
+      {!collapsed && (
+        <div>
+          {!loaded ? (
+            <div style={{ padding: "8px 10px", color: "var(--text-faint)", fontSize: 11 }}>Loading…</div>
+          ) : sorted.length === 0 ? (
+            <div style={{ padding: "8px 10px", color: "var(--text-faint)", fontSize: 11 }}>No child processes</div>
+          ) : (
+            sorted.map((p) => <ProcRow key={p.pid} p={p} />)
+          )}
+        </div>
+      )}
     </div>
   );
 }

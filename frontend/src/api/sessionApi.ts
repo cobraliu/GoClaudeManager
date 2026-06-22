@@ -1169,6 +1169,32 @@ export function getStatusBar(sessionId: string): Promise<StatusBarResponse> {
   return request(`/api/sessions/${sessionId}/status-bar`);
 }
 
+// Live process tree rooted at the session's Claude process (pane PID), incl.
+// every descendant (subagent-spawned processes too).
+export interface ProcessInfo {
+  pid: number;
+  ppid: number;
+  comm: string;
+  cmdline: string;
+  cpu_percent: number;   // per-core scale (100 == one full core)
+  mem_percent: number;
+  rss_bytes: number;
+  uptime_seconds: number;
+  is_root: boolean;
+  stdout_file?: string;
+  stderr_file?: string;
+  stdout_tail?: string[];
+  stderr_tail?: string[]; // empty when stderr == stdout
+}
+export interface ProcessSnapshot {
+  root_pid: number | null;
+  processes: ProcessInfo[];
+  timestamp: string;
+}
+export function getSessionProcesses(sessionId: string, tail = 30): Promise<ProcessSnapshot> {
+  return request(`/api/sessions/${sessionId}/processes?tail=${tail}`);
+}
+
 export function openShell(sessionId: string): Promise<AttachResponse> {
   return request(`/api/sessions/${sessionId}/shell`, { method: "POST", body: JSON.stringify({}) });
 }

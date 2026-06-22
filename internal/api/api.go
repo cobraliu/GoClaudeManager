@@ -18,6 +18,7 @@ import (
 	"github.com/loki/goclaudemanager/internal/config"
 	"github.com/loki/goclaudemanager/internal/git"
 	"github.com/loki/goclaudemanager/internal/jsonl"
+	"github.com/loki/goclaudemanager/internal/procmon"
 	"github.com/loki/goclaudemanager/internal/sdktransport"
 	"github.com/loki/goclaudemanager/internal/status"
 	"github.com/loki/goclaudemanager/internal/store"
@@ -39,6 +40,7 @@ type Deps struct {
 	Term     *term.Service
 	SDK      *sdktransport.Manager
 	Sysmon   *sysmon.Sampler
+	Procmon  *procmon.Sampler
 }
 
 // Router builds the /api sub-router.

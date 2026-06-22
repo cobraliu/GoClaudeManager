@@ -42,6 +42,7 @@ func sessionsRouter(d Deps) http.Handler {
 		r.Get("/{id}/goals", func(w http.ResponseWriter, r *http.Request) { listGoals(d, w, r) })
 		r.Get("/{id}/todos", func(w http.ResponseWriter, r *http.Request) { listTodos(d, w, r) })
 		r.Get("/{id}/status-bar", func(w http.ResponseWriter, r *http.Request) { statusBar(d, w, r) })
+		r.Get("/{id}/processes", func(w http.ResponseWriter, r *http.Request) { listProcesses(d, w, r) })
 		r.Get("/{id}/auqs", func(w http.ResponseWriter, r *http.Request) { listAUQs(d, w, r) })
 		r.Get("/{id}/tasks", func(w http.ResponseWriter, r *http.Request) { listTasks(d, w, r) })
 		r.Get("/{id}/conversation", func(w http.ResponseWriter, r *http.Request) { getConversation(d, w, r) })
