@@ -2663,7 +2663,8 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                             <ConversationPane
                               key={active.session_id + active.ws_token}
                               sessionId={active.session_id}
-                              sessionName={activeSessionMeta?.name || activeSessionMeta?.project}
+                              projectName={activeSessionMeta?.project}
+                              sessionName={activeSessionMeta?.name}
                               tool={activeSessionMeta?.tool}
                               codexTransport={activeSessionMeta?.codex_transport}
                               isStreaming={activeSessionMeta?.is_streaming}

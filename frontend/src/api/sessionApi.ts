@@ -717,6 +717,25 @@ export function sqliteQuery(
   return request(`/api/sessions/${sessionId}/fs/sqlite?${params.toString()}`);
 }
 
+export interface ColumnarInfo {
+  columns: string[];
+  rows: unknown[][];
+  total: number;
+  format: "parquet" | "arrow";
+  path: string;
+}
+
+// columnarQuery reads a window of rows from a parquet or arrow file as a table.
+export function columnarQuery(
+  sessionId: string,
+  path: string,
+  limit = 100,
+  offset = 0,
+): Promise<ColumnarInfo> {
+  const params = new URLSearchParams({ path, limit: String(limit), offset: String(offset) });
+  return request(`/api/sessions/${sessionId}/fs/columnar?${params.toString()}`);
+}
+
 export interface SqliteExecResult {
   columns: string[];
   rows: unknown[][];

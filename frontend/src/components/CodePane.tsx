@@ -12,7 +12,7 @@ import {
   type ChangedFile, type ChangedFilesWarning, type DirInfoResponse, type FileData, type FileEntry,
   type GitLogEntry,
 } from "../api/sessionApi";
-import { SqliteViewer, CsvViewer, ArchiveViewer, JsonlViewer, copyText, DirPicker } from "./FileEditorModal";
+import { SqliteViewer, ColumnarViewer, CsvViewer, ArchiveViewer, JsonlViewer, copyText, DirPicker } from "./FileEditorModal";
 import { DownloadExclusionModal } from "./DownloadExclusionModal";
 import { CodeMirrorEditor, type CodeMirrorEditorHandle } from "./CodeMirrorEditor";
 import { GitPanel, CommitDetailModal } from "./GitPanel";
@@ -76,6 +76,8 @@ function isMdFile(name: string) { return name.split(".").pop()?.toLowerCase() ==
 
 const SQLITE_EXTS = new Set(["db", "sqlite", "sqlite3"]);
 function isSqliteFile(name: string) { return SQLITE_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
+const COLUMNAR_EXTS = new Set(["parquet", "pq", "arrow", "feather", "ipc"]);
+function isColumnarFile(name: string) { return COLUMNAR_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
 function isPdfFile(name: string) { return name.split(".").pop()?.toLowerCase() === "pdf"; }
 function isHtmlFile(name: string) {
   const e = name.split(".").pop()?.toLowerCase() ?? "";
@@ -1725,6 +1727,7 @@ function ViewerContent({
     );
   }
   const showSqlite = entry.is_sqlite ?? false;
+  const showColumnar = isColumnarFile(entry.name);
   const showPdf = isPdfFile(entry.name);
   const showImage = isImage(entry.name);
   const showVideo = isVideo(entry.name);
@@ -1740,6 +1743,7 @@ function ViewerContent({
 
   if (entry.is_archive) return <ArchiveViewer sessionId={sessionId} path={entry.path} />;
   if (showSqlite) return <SqliteViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
+  if (showColumnar) return <ColumnarViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
   if (showPdf) return <PdfViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
   if (showImage) return <ImageViewer sessionId={sessionId} path={entry.path} />;
   if (showVideo) return <VideoViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
@@ -1816,7 +1820,7 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
 
   useEffect(() => {
     const n = path.split("/").pop() ?? path;
-    const metaOnly = isArchiveFile(n) || isSqliteFile(n) || isPdfFile(n) || isImage(n) || isMedia(n);
+    const metaOnly = isArchiveFile(n) || isSqliteFile(n) || isColumnarFile(n) || isPdfFile(n) || isImage(n) || isMedia(n);
     let mounted = true;
     setFileData(null);
     setFileLoading(true);
@@ -1846,11 +1850,12 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
   }, [sessionId]);
 
   const showSqlite = isSqliteFile(name);
+  const showColumnar = isColumnarFile(name);
   const showImage = isImage(name);
   const showArchive = isArchiveFile(name);
   const showPdf = isPdfFile(name);
   const selectedChanged = changedFiles.find(f => f.path === path);
-  const entry: FileEntry = { name, path, type: "file", size: null, is_text: !showSqlite && !showPdf && !showArchive, is_skipped: false, is_sqlite: showSqlite, is_archive: showArchive };
+  const entry: FileEntry = { name, path, type: "file", size: null, is_text: !showSqlite && !showColumnar && !showPdf && !showArchive, is_skipped: false, is_sqlite: showSqlite, is_archive: showArchive };
 
   // ── Config format conversion / validation ─────────────────────────────────
   const sourceFmt = detectFormat(name);
@@ -1875,7 +1880,7 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
     };
   }, [fileData, sourceFmt, convertTarget, conversion]);
 
-  const canEdit = !!fileData && !fileData.is_binary && !showSqlite && !showArchive && !showPdf && !showImage;
+  const canEdit = !!fileData && !fileData.is_binary && !showSqlite && !showColumnar && !showArchive && !showPdf && !showImage;
   const isModified = editing && !!fileData && editBuffer !== fileData.content;
 
   useEffect(() => {
@@ -1958,7 +1963,7 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
         selectedChanged={selectedChanged}
         fileData={fileData}
         showImage={showImage}
-        showSqlite={showSqlite || showArchive}
+        showSqlite={showSqlite || showArchive || showColumnar}
         isMd={isMd}
         isCsv={isCsv}
         isHtml={isHtml}
@@ -2605,7 +2610,7 @@ export function CodePane({
   }, [toolForm, selectedEntry]);
 
   const loadFile = useCallback(async (entry: FileEntry, scroll = false) => {
-    if (isImage(entry.name) || isMedia(entry.name) || entry.is_sqlite || isPdfFile(entry.name) || entry.is_archive) {
+    if (isImage(entry.name) || isMedia(entry.name) || entry.is_sqlite || isColumnarFile(entry.name) || isPdfFile(entry.name) || entry.is_archive) {
       setFileData(null); setSelectedEntry(entry); setScrollToFirst(false); return;
     }
     setFileLoading(true); setScrollToFirst(scroll);
@@ -2639,7 +2644,8 @@ export function CodePane({
     const isSqlite = isSqliteFile(name);
     const isPdf = isPdfFile(name);
     const isArchive = isArchiveFile(name);
-    const entry: FileEntry = { name, path: openPath.path, type: "file", size: null, is_text: !isSqlite && !isPdf && !isArchive, is_skipped: false, is_sqlite: isSqlite, is_archive: isArchive };
+    const isColumnar = isColumnarFile(name);
+    const entry: FileEntry = { name, path: openPath.path, type: "file", size: null, is_text: !isSqlite && !isColumnar && !isPdf && !isArchive, is_skipped: false, is_sqlite: isSqlite, is_archive: isArchive };
     setAutoFollow(false);
     if (openPath.viewMode) setViewMode(openPath.viewMode);
     setMdPreview(isMdFile(name));
@@ -2669,7 +2675,7 @@ export function CodePane({
         if (treeOnly) return; // FileViewerPane handles its own refresh
 
         if (!autoFollowRef.current) {
-          if (selectedEntry && !isImage(selectedEntry.name) && !isMedia(selectedEntry.name) && !selectedEntry.is_sqlite && !selectedEntry.is_archive) {
+          if (selectedEntry && !isImage(selectedEntry.name) && !isMedia(selectedEntry.name) && !selectedEntry.is_sqlite && !isColumnarFile(selectedEntry.name) && !selectedEntry.is_archive) {
             const data = await getCodeFile(sessionId, selectedEntry.path).catch(() => null);
             if (mounted && data) setFileData(data);
           }
@@ -2688,7 +2694,7 @@ export function CodePane({
               };
               if (mounted) loadFile(entry, true);
             } catch {/* ignore */}
-          } else if (selectedEntry && !isImage(selectedEntry.name) && !selectedEntry.is_sqlite && !selectedEntry.is_archive) {
+          } else if (selectedEntry && !isImage(selectedEntry.name) && !selectedEntry.is_sqlite && !isColumnarFile(selectedEntry.name) && !selectedEntry.is_archive) {
             const data = await getCodeFile(sessionId, selectedEntry.path).catch(() => null);
             if (mounted && data) setFileData(data);
           }
@@ -3081,7 +3087,7 @@ export function CodePane({
               selectedChanged={selectedChanged}
               fileData={fileData}
               showImage={isImage(selectedEntry.name)}
-              showSqlite={selectedEntry.is_sqlite ?? false}
+              showSqlite={(selectedEntry.is_sqlite ?? false) || isColumnarFile(selectedEntry.name)}
               isMd={isMdFile(selectedEntry.name)}
               isCsv={isCsvFile(selectedEntry.name)}
               isHtml={isHtmlFile(selectedEntry.name)}

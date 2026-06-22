@@ -83,6 +83,7 @@ func registerFilesRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}/fs/dir-info", func(w http.ResponseWriter, req *http.Request) { fsDirInfo(d, w, req) })
 	r.Get("/{id}/fs/archive-list", func(w http.ResponseWriter, req *http.Request) { fsArchiveList(d, w, req) })
 	r.Get("/{id}/fs/sqlite", func(w http.ResponseWriter, req *http.Request) { fsSqliteQuery(d, w, req) })
+	r.Get("/{id}/fs/columnar", func(w http.ResponseWriter, req *http.Request) { fsColumnarQuery(d, w, req) })
 
 	// Mutating.
 	r.Post("/{id}/fs/mkdir", func(w http.ResponseWriter, req *http.Request) { fsMkdir(d, w, req) })

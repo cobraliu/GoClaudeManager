@@ -3978,8 +3978,10 @@ function _normalizePendingAuq(data: PendingAuqData): AskQuestion[] {
 
 interface Props {
   sessionId: string;
-  /** Display name of the session, shown bold in the bottom status banner so a
-   *  user juggling several open sessions can see which one they're typing into. */
+  /** Project + session name shown in the bottom status banner so a user juggling
+   *  several open sessions can see which one they're typing into: the project is
+   *  bold, the session name follows in small faint text. */
+  projectName?: string;
   sessionName?: string;
   tool?: "claude" | "cursor" | "codex";
   /** Codex transport, only meaningful when tool === "codex". "app_server" sessions
@@ -4128,7 +4130,7 @@ function mergeRawDelta(prev: RawMessage[], delta: RawMessage[]): RawMessage[] | 
   return out;
 }
 
-export function ConversationPane({ sessionId, sessionName, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, pendingPlanData, isWaitingForAuq = false, lostMessages, stopRef, refreshRef }: Props) {
+export function ConversationPane({ sessionId, projectName, sessionName, tool, codexTransport, isStreaming, isCompacting = false, compactingProgress = null, chatOnly = false, pendingAuqData, pendingApproveData, pendingPlanData, isWaitingForAuq = false, lostMessages, stopRef, refreshRef }: Props) {
   // Codex app-server transport: no tmux, no terminal WS. The parent (SessionsPage)
   // owns input via CodexChatInput → POST /codex-message. We must short-circuit the
   // WS attach effect AND the internal textarea or the user sees two input bars
@@ -5629,18 +5631,32 @@ export function ConversationPane({ sessionId, sessionName, tool, codexTransport,
           Codex app-server mode has no terminal WS, so we gate on transport too — liveness is
           owned elsewhere (status poll + codex_appserver_manager). */}
       {!chatOnly && (wsStatus === "connected" || isCodexAppServer) && (() => {
-        // Bold session name pinned to the left of the centered status text, so a
-        // user with several sessions open can confirm which one they're in.
-        const nameTag = sessionName ? (
+        // Project name (bold) + session name (small, faint) pinned to the left of
+        // the centered status text, so a user with several sessions open can
+        // confirm which one they're in.
+        const showSession = sessionName && sessionName !== projectName;
+        const nameTag = (projectName || sessionName) ? (
           <span
-            title={sessionName}
             style={{
               position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)",
-              fontWeight: 700, color: "var(--text-body)", maxWidth: "45%",
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              maxWidth: "50%", display: "flex", alignItems: "baseline", gap: 6,
+              overflow: "hidden", whiteSpace: "nowrap",
             }}
           >
-            {sessionName}
+            <span
+              title={projectName || sessionName}
+              style={{ fontWeight: 700, color: "var(--text-body)", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}
+            >
+              {projectName || sessionName}
+            </span>
+            {showSession && (
+              <span
+                title={sessionName}
+                style={{ fontSize: 10, color: "var(--text-faint)", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, flexShrink: 1 }}
+              >
+                {sessionName}
+              </span>
+            )}
           </span>
         ) : null;
         if (isStreaming && isCompacting) {

@@ -181,13 +181,14 @@ function ScheduleForm({
           <div style={{ fontSize: 13, color: "var(--text-secondary)", fontWeight: 600 }}>Schedule Command</div>
           <button onClick={onClose} style={{ background: "var(--text-faintest)", color: "var(--text-secondary)", fontSize: 11, padding: "2px 8px" }}>✕</button>
         </div>
-        <input
+        <textarea
           autoFocus
-          placeholder="Command to send..."
+          placeholder="Command to send…  (Enter for newline, ⌘/Ctrl+Enter to schedule)"
           value={command}
           onChange={(e) => setCommand(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-          style={inputStyle}
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}
+          rows={4}
+          style={{ ...inputStyle, resize: "vertical", minHeight: 64, lineHeight: 1.5, fontFamily: "inherit" }}
         />
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <span style={{ fontSize: 12, color: "var(--text-muted)", width: 44, flexShrink: 0 }}>After</span>

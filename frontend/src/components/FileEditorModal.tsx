@@ -31,6 +31,8 @@ import {
   createDir,
   sqliteQuery,
   sqliteExec,
+  columnarQuery,
+  type ColumnarInfo,
   renameEntry,
   moveEntry,
   listArchive,
@@ -1216,6 +1218,119 @@ function CellPopup({
 }
 
 // ── SQLite Viewer ────────────────────────────────────────────────────────────
+// ColumnarViewer renders a parquet or arrow (Feather/IPC) file as a read-only
+// paginated table. Mirrors SqliteViewer's look but has no table list / SQL /
+// editing — a columnar file is a single table.
+export function ColumnarViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  const [info, setInfo] = useState<ColumnarInfo | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedCell, setExpandedCell] = useState<{ column: string; value: string } | null>(null);
+  const PAGE_SIZE = 100;
+
+  const load = useCallback(async (off: number) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await columnarQuery(sessionId, path, PAGE_SIZE, off);
+      setInfo(res);
+      setOffset(off);
+    } catch (e) {
+      setError(String(e).replace(/^Error:\s*/, ""));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId, path]);
+
+  useEffect(() => { load(0); }, [load]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setExpandedCell(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  if (error) return <div style={{ padding: 16, color: "var(--accent-red)", fontSize: 13, whiteSpace: "pre-wrap" }}>{error}</div>;
+  if (!info) return <div style={{ padding: 16, color: "var(--text-muted)", fontSize: 13 }}>Loading…</div>;
+
+  const totalPages = Math.max(1, Math.ceil((info.total || 0) / PAGE_SIZE));
+  const currentPage = Math.floor(offset / PAGE_SIZE);
+  const rangeStart = info.total === 0 ? 0 : offset + 1;
+  const rangeEnd = Math.min(offset + PAGE_SIZE, info.total);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {expandedCell && (
+        <div
+          onClick={() => setExpandedCell(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 10001, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--bg-modal)", border: "1px solid var(--border)", borderRadius: 8, padding: 14, width: "min(640px, 92vw)", maxHeight: "80vh", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-secondary)", fontWeight: 600 }}>{expandedCell.column}</span>
+              <button onClick={() => setExpandedCell(null)} style={{ background: "var(--text-faintest)", color: "var(--text-secondary)", fontSize: 11, padding: "2px 8px" }}>✕</button>
+            </div>
+            <div style={{ overflow: "auto", fontFamily: "monospace", fontSize: 12, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{expandedCell.value}</div>
+          </div>
+        </div>
+      )}
+      <div style={{ padding: "6px 12px", borderBottom: "1px solid #1f2937", fontSize: 11, color: "var(--text-muted)", background: "var(--bg-surface)", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontFamily: "monospace", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--accent-blue)" }}>{info.format}</span>
+          <span style={{ color: "var(--text-secondary)" }}>{info.columns.length} cols</span>
+        </span>
+        <span>{info.total.toLocaleString()} rows{loading ? " · loading…" : ""}</span>
+      </div>
+      <div style={{ overflow: "auto", flex: 1 }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%", whiteSpace: "nowrap" }}>
+          <thead>
+            <tr style={{ background: "var(--bg-surface)", position: "sticky", top: 0 }}>
+              <th style={{ padding: "6px 10px", borderBottom: "1px solid var(--border)", color: "var(--text-faint)", textAlign: "right", fontWeight: 600, fontFamily: "monospace" }}>#</th>
+              {info.columns.map((col, i) => (
+                <th key={i} style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", textAlign: "left", fontWeight: 600 }}>{col}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {info.rows.map((row, ri) => (
+              <tr key={ri} style={{ background: ri % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+                <td style={{ padding: "4px 10px", borderBottom: "1px solid #1f2937", color: "var(--text-faint)", fontFamily: "monospace", textAlign: "right", userSelect: "none" }}>{offset + ri + 1}</td>
+                {(row as unknown[]).map((cell, ci) => {
+                  const str = cell == null ? null : String(cell);
+                  return (
+                    <td
+                      key={ci}
+                      onClick={() => str != null && setExpandedCell({ column: info.columns[ci], value: str })}
+                      title={str != null && str.length > 60 ? "Click to view full content" : undefined}
+                      style={{
+                        padding: "4px 12px", borderBottom: "1px solid #1f2937",
+                        color: str == null ? "var(--text-faint)" : "var(--text-primary)",
+                        fontFamily: "monospace", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis",
+                        cursor: str != null ? "pointer" : "default", whiteSpace: "nowrap",
+                      }}
+                      onMouseEnter={(e) => { if (str != null) e.currentTarget.style.background = "rgba(88,166,255,0.08)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+                    >
+                      {str == null ? "NULL" : str}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ padding: "6px 12px", borderTop: "1px solid #1f2937", display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>
+        <button disabled={currentPage === 0 || loading} onClick={() => load(Math.max(0, offset - PAGE_SIZE))} style={{ background: "var(--text-faintest)", color: "var(--text-body)", fontSize: 11, padding: "3px 8px" }}>Prev</button>
+        <span>{currentPage + 1}/{totalPages}</span>
+        <button disabled={currentPage >= totalPages - 1 || loading} onClick={() => load(offset + PAGE_SIZE)} style={{ background: "var(--text-faintest)", color: "var(--text-body)", fontSize: 11, padding: "3px 8px" }}>Next</button>
+        <span style={{ marginLeft: "auto" }}>{rangeStart.toLocaleString()}–{rangeEnd.toLocaleString()} of {info.total.toLocaleString()}</span>
+      </div>
+    </div>
+  );
+}
+
 export function SqliteViewer({ sessionId, path }: { sessionId: string; path: string }) {
   const [info, setInfo] = useState<SqliteInfo | null>(null);
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
