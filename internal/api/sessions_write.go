@@ -30,6 +30,7 @@ func registerSessionWriteRoutes(r chi.Router, d Deps) {
 	r.Patch("/{id}/model", func(w http.ResponseWriter, r *http.Request) { setSessionModel(d, w, r) })
 	r.Delete("/{id}", func(w http.ResponseWriter, r *http.Request) { deleteSession(d, w, r) })
 	r.Post("/{id}/tasks", func(w http.ResponseWriter, r *http.Request) { createTask(d, w, r) })
+	r.Patch("/{id}/tasks/{taskID}", func(w http.ResponseWriter, r *http.Request) { updateTask(d, w, r) })
 	r.Delete("/{id}/tasks/{taskID}", func(w http.ResponseWriter, r *http.Request) { cancelTask(d, w, r) })
 }
 
@@ -471,6 +472,40 @@ func createTask(d Deps, w http.ResponseWriter, r *http.Request) {
 		ID: t.ID, Command: t.Command, RunAt: t.RunAt.String(),
 		Status: t.Status, CreatedAt: t.CreatedAt.String(), LoopSeconds: t.LoopSeconds,
 	})
+}
+
+type taskUpdateReq struct {
+	Command string `json:"command"`
+}
+
+// updateTask edits a still-pending scheduled command. The next fire uses the
+// new text; for a loop task it propagates to every later iteration too (each
+// fire copies the command forward). Tasks that already fired/cancelled 404.
+func updateTask(d Deps, w http.ResponseWriter, r *http.Request) {
+	s := resolveOwned(d, w, r)
+	if s == nil {
+		return
+	}
+	var body taskUpdateReq
+	if !readJSON(w, r, &body) {
+		return
+	}
+	cmd := strings.TrimSpace(body.Command)
+	if cmd == "" {
+		writeErr(w, http.StatusBadRequest, "command is required")
+		return
+	}
+	taskID := chi.URLParam(r, "taskID")
+	ok, err := d.Store.UpdateTaskCommand(taskID, cmd)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "update task failed")
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "task not found or already fired")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": taskID, "command": cmd})
 }
 
 func cancelTask(d Deps, w http.ResponseWriter, r *http.Request) {

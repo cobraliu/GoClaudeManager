@@ -1094,6 +1094,19 @@ export function cancelTask(sessionId: string, taskId: string): Promise<void> {
   return request(`/api/sessions/${sessionId}/tasks/${taskId}`, { method: "DELETE" });
 }
 
+// updateTaskCommand edits a still-pending task's command. The next fire uses
+// the new text; for a loop task it carries forward to every later iteration.
+export function updateTaskCommand(
+  sessionId: string,
+  taskId: string,
+  command: string,
+): Promise<{ id: string; command: string }> {
+  return request(`/api/sessions/${sessionId}/tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ command }),
+  });
+}
+
 export function listTasks(sessionId: string): Promise<ScheduledTask[]> {
   return request(`/api/sessions/${sessionId}/tasks`);
 }

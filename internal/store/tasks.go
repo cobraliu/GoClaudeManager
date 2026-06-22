@@ -113,6 +113,21 @@ func (s *Store) UpdateTaskStatus(taskID, status string, errMsg *string) error {
 	return err
 }
 
+// UpdateTaskCommand rewrites a still-pending task's command; returns whether a
+// row changed (false if the task already fired/cancelled or doesn't exist).
+// For a loop task this edits the next queued iteration — fireDueTasks copies
+// the command forward, so every subsequent fire uses the new text too.
+func (s *Store) UpdateTaskCommand(taskID, command string) (bool, error) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	res, err := s.DB.Exec(`UPDATE scheduled_tasks SET command = ? WHERE id = ? AND status = 'pending'`, command, taskID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // CancelTask marks a pending task cancelled; returns whether a row changed.
 func (s *Store) CancelTask(taskID string) (bool, error) {
 	s.wmu.Lock()

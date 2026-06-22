@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { SessionMeta, ScheduledTask } from "../api/sessionApi";
-import { createTask, cancelTask, renameSession } from "../api/sessionApi";
+import { createTask, cancelTask, updateTaskCommand, renameSession } from "../api/sessionApi";
 import scheduleIcon from "../assets/schedule.svg";
 
 function _relTime(iso: string): string {
@@ -273,17 +273,38 @@ function _formatInterval(totalSeconds: number): string {
 
 function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionId: string; onCancel: () => void }) {
   const [cancelling, setCancelling] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  // none = collapsed, view = read-only full command, edit = textarea editor.
+  const [mode, setMode] = useState<"none" | "view" | "edit">("none");
+  const [draft, setDraft] = useState(task.command);
+  const [saving, setSaving] = useState(false);
+  const [truncated, setTruncated] = useState(false);
   const [, setTick] = useState(0);
-  // Long commands are truncated to one line in the chip; offer an expander so
-  // the full text can be read. Short ones fit already, so skip the toggle.
-  const canExpand = task.command.length > 30;
+  const cmdRef = useRef<HTMLSpanElement>(null);
 
   // Update countdown every second locally without waiting for server poll
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
+
+  // Show the ▶/▼ "view full" toggle only when the one-line command is actually
+  // clipped — measured live (chip width varies), not guessed from char count.
+  useEffect(() => {
+    const el = cmdRef.current;
+    if (!el) return;
+    const measure = () => setTruncated(el.scrollWidth > el.clientWidth + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [task.command]);
+
+  // Re-sync the editor draft when the task's command changes server-side (e.g. a
+  // loop fired and the next pending row carries the edited text), but only while
+  // not editing so an in-progress edit isn't clobbered by a poll.
+  useEffect(() => {
+    if (mode !== "edit") setDraft(task.command);
+  }, [task.command, mode]);
 
   const handleCancel = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -296,9 +317,29 @@ function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionI
     }
   };
 
+  const dirty = draft.trim() !== "" && draft.trim() !== task.command;
+
+  const handleSave = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!dirty) {
+      setMode("none");
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateTaskCommand(sessionId, task.id, draft.trim());
+      setMode("none");
+      onCancel(); // reuse the parent's task-refresh callback
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const remaining = formatRemaining(task.run_at);
   const isLoop = !!task.loop_seconds;
   const intervalLabel = isLoop ? _formatInterval(task.loop_seconds!) : null;
+  // The view caret is only useful when the one-line command is actually clipped.
+  const canView = truncated;
 
   return (
     <div
@@ -327,18 +368,25 @@ function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionI
             /{intervalLabel}
           </span>
         )}
-        <span style={{ color: isLoop ? "#ddd6fe" : "var(--text-secondary)", fontFamily: "monospace", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span ref={cmdRef} style={{ color: isLoop ? "#ddd6fe" : "var(--text-secondary)", fontFamily: "monospace", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {task.command}
         </span>
-        {canExpand && (
+        {canView && (
           <button
-            onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
-            style={{ background: "transparent", color: "var(--text-faint)", fontSize: 9, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
-            title={expanded ? "Collapse command" : "Show full command"}
+            onClick={(e) => { e.stopPropagation(); setMode((m) => (m === "view" ? "none" : "view")); }}
+            style={{ background: "transparent", color: mode === "view" ? "var(--accent-blue)" : "var(--text-faint)", fontSize: 9, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+            title={mode === "view" ? "Collapse" : "Show full command"}
           >
-            {expanded ? "▼" : "▶"}
+            {mode === "view" ? "▼" : "▶"}
           </button>
         )}
+        <button
+          onClick={(e) => { e.stopPropagation(); setMode((m) => (m === "edit" ? "none" : "edit")); }}
+          style={{ background: "transparent", color: mode === "edit" ? "var(--accent-blue)" : "var(--text-faint)", fontSize: 11, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+          title={mode === "edit" ? "Close editor" : "Edit command"}
+        >
+          ✎
+        </button>
         <span style={{ color: remaining === "due" ? "#f59e0b" : (isLoop ? "#c4b5fd" : "var(--text-muted)"), flexShrink: 0 }}>{remaining}</span>
         <button
           disabled={cancelling}
@@ -349,7 +397,7 @@ function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionI
           ✕
         </button>
       </div>
-      {canExpand && expanded && (
+      {mode === "view" && (
         <div style={{
           fontFamily: "monospace",
           fontSize: 11,
@@ -365,6 +413,54 @@ function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionI
           overflowY: "auto",
         }}>
           {task.command}
+        </div>
+      )}
+      {mode === "edit" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }} onClick={(e) => e.stopPropagation()}>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={Math.min(12, Math.max(2, draft.split("\n").length))}
+            spellCheck={false}
+            style={{
+              fontFamily: "monospace",
+              fontSize: 11,
+              lineHeight: 1.45,
+              color: isLoop ? "#ddd6fe" : "var(--text-secondary)",
+              background: "var(--bg-base)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              padding: "5px 7px",
+              width: "100%",
+              boxSizing: "border-box",
+              resize: "vertical",
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, color: "var(--text-faint)" }}>
+              {isLoop ? "Applies to the next run and all later loops" : "Next run uses the new command"}
+            </span>
+            <button
+              onClick={handleSave}
+              disabled={saving || !dirty}
+              style={{
+                marginLeft: "auto",
+                background: dirty ? "var(--accent-blue)" : "var(--bg-hover)",
+                color: dirty ? "#fff" : "var(--text-faint)",
+                border: "none", borderRadius: 3, fontSize: 10.5, padding: "2px 12px",
+                cursor: saving || !dirty ? "default" : "pointer", fontFamily: "inherit",
+                opacity: saving ? 0.6 : 1,
+              }}
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); setDraft(task.command); setMode("none"); }}
+              style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text-secondary)", borderRadius: 3, fontSize: 10.5, padding: "2px 8px", cursor: "pointer", fontFamily: "inherit" }}
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>
