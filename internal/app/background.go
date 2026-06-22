@@ -82,7 +82,11 @@ func (a *App) fireDueTasks() {
 				_ = a.Store.UpdateTaskStatus(task.ID, "failed", strp(err.Error()))
 				continue
 			}
-		} else if err := a.Tmux.SendKeys(session.TmuxSessionName, task.Command); err != nil {
+		} else if err := a.Tmux.DeliverToPane(session.TmuxSessionName, task.Command, true); err != nil {
+			// Deliver via the same path the interactive UI uses: bracketed-paste
+			// + delayed Enter + "@" double-Enter. Plain SendKeys raced the Enter
+			// (and never sent the second Enter that dismisses the "@" file-mention
+			// popup), so commands sometimes landed in the box without submitting.
 			_ = a.Store.UpdateTaskStatus(task.ID, "failed", strp(err.Error()))
 			continue
 		}
