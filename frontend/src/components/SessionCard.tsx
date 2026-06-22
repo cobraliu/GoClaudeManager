@@ -273,7 +273,11 @@ function _formatInterval(totalSeconds: number): string {
 
 function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionId: string; onCancel: () => void }) {
   const [cancelling, setCancelling] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [, setTick] = useState(0);
+  // Long commands are truncated to one line in the chip; offer an expander so
+  // the full text can be read. Short ones fit already, so skip the toggle.
+  const canExpand = task.command.length > 30;
 
   // Update countdown every second locally without waiting for server poll
   useEffect(() => {
@@ -300,8 +304,8 @@ function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionI
     <div
       style={{
         display: "flex",
-        alignItems: "center",
-        gap: 6,
+        flexDirection: "column",
+        gap: 4,
         background: isLoop ? "rgba(124,58,237,0.18)" : "var(--bg-hover)",
         border: isLoop ? "1px solid #7c3aed" : "1px solid transparent",
         borderRadius: 4,
@@ -312,28 +316,57 @@ function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionI
       onClick={(e) => e.stopPropagation()}
       title={`${task.command}${isLoop ? ` (repeats every ${intervalLabel})` : ""}`}
     >
-      {isLoop ? (
-        <span style={{ color: "#a78bfa", fontSize: 13, flexShrink: 0, lineHeight: 1 }}>↻</span>
-      ) : (
-        <img src={scheduleIcon} style={{ width: 12, height: 12, flexShrink: 0, filter: "invert(0.7) sepia(1) saturate(3) hue-rotate(10deg)" }} />
-      )}
-      {isLoop && (
-        <span style={{ color: "#a78bfa", fontFamily: "monospace", fontSize: 10, flexShrink: 0, fontWeight: 600 }}>
-          /{intervalLabel}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        {isLoop ? (
+          <span style={{ color: "#a78bfa", fontSize: 13, flexShrink: 0, lineHeight: 1 }}>↻</span>
+        ) : (
+          <img src={scheduleIcon} style={{ width: 12, height: 12, flexShrink: 0, filter: "invert(0.7) sepia(1) saturate(3) hue-rotate(10deg)" }} />
+        )}
+        {isLoop && (
+          <span style={{ color: "#a78bfa", fontFamily: "monospace", fontSize: 10, flexShrink: 0, fontWeight: 600 }}>
+            /{intervalLabel}
+          </span>
+        )}
+        <span style={{ color: isLoop ? "#ddd6fe" : "var(--text-secondary)", fontFamily: "monospace", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {task.command}
         </span>
+        {canExpand && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+            style={{ background: "transparent", color: "var(--text-faint)", fontSize: 9, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+            title={expanded ? "Collapse command" : "Show full command"}
+          >
+            {expanded ? "▼" : "▶"}
+          </button>
+        )}
+        <span style={{ color: remaining === "due" ? "#f59e0b" : (isLoop ? "#c4b5fd" : "var(--text-muted)"), flexShrink: 0 }}>{remaining}</span>
+        <button
+          disabled={cancelling}
+          onClick={handleCancel}
+          style={{ background: "transparent", color: "var(--text-faint)", fontSize: 12, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+          title={isLoop ? "Cancel next iteration (loop stops)" : "Cancel task"}
+        >
+          ✕
+        </button>
+      </div>
+      {canExpand && expanded && (
+        <div style={{
+          fontFamily: "monospace",
+          fontSize: 11,
+          lineHeight: 1.45,
+          color: isLoop ? "#ddd6fe" : "var(--text-secondary)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          background: "var(--bg-base)",
+          border: "1px solid var(--border)",
+          borderRadius: 4,
+          padding: "5px 7px",
+          maxHeight: 220,
+          overflowY: "auto",
+        }}>
+          {task.command}
+        </div>
       )}
-      <span style={{ color: isLoop ? "#ddd6fe" : "var(--text-secondary)", fontFamily: "monospace", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {task.command}
-      </span>
-      <span style={{ color: remaining === "due" ? "#f59e0b" : (isLoop ? "#c4b5fd" : "var(--text-muted)"), flexShrink: 0 }}>{remaining}</span>
-      <button
-        disabled={cancelling}
-        onClick={handleCancel}
-        style={{ background: "transparent", color: "var(--text-faint)", fontSize: 12, padding: "0 2px", lineHeight: 1 }}
-        title={isLoop ? "Cancel next iteration (loop stops)" : "Cancel task"}
-      >
-        ✕
-      </button>
     </div>
   );
 }
