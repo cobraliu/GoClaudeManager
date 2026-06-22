@@ -22,6 +22,7 @@ import { ConfigCheckButton } from "./ConfigCheckButton";
 import { ConfigValidationBanner } from "./ConfigValidationBanner";
 import { detectFormat, convert, languageFor, type ConfigFormat } from "../lib/configConvert";
 import { useFsWatch } from "../lib/useFsWatch";
+import { usePageVisible } from "../hooks/usePageVisible";
 import downloadIcon from "../assets/download.svg";
 
 const MAX_TRANSFER_MB = 16;
@@ -1129,8 +1130,10 @@ function RecentCommitsPanel({ sessionId }: { sessionId: string }) {
   const [loaded, setLoaded] = useState(false);
   const [detailEntry, setDetailEntry] = useState<GitLogEntry | null>(null);
   const [showFullPanel, setShowFullPanel] = useState(false);
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
+    if (!pageVisible) return; // commits rarely change; don't poll a hidden tab
     let mounted = true;
     const poll = async () => {
       try {
@@ -1145,7 +1148,7 @@ function RecentCommitsPanel({ sessionId }: { sessionId: string }) {
     poll();
     const id = setInterval(poll, 15000);
     return () => { mounted = false; clearInterval(id); };
-  }, [sessionId]);
+  }, [sessionId, pageVisible]);
 
   // Hide entirely until first fetch settles; avoids flashing "No commits" in non-repo cwd.
   if (!loaded) return null;
@@ -1365,6 +1368,7 @@ export function FileSidePanel({
   const prevChangedRef = useRef<Set<string>>(new Set());
   const pollChangesRef = useRef<() => Promise<void>>(async () => {});
   const dirWatch = useExpandedDirWatch(sessionId, () => setFilesRefreshKey((k) => k + 1));
+  const pageVisible = usePageVisible();
 
   useEffect(() => {
     let mounted = true;
@@ -1384,14 +1388,17 @@ export function FileSidePanel({
         prevChangedRef.current = nextSet;
       } catch {/* ignore */}
     };
+    // Keep the ref current even while hidden so fs/watch WS events still trigger
+    // an immediate refresh; only the periodic backstop is paused in a hidden tab.
     pollChangesRef.current = poll;
-    poll();
+    if (!pageVisible) return () => { mounted = false; };
+    poll(); // immediate fetch on mount / when the tab becomes visible again
     // Backstop poll — the fs/watch WS handles the common case in ~150ms, but
     // the poll covers WS gaps and also detects status changes (modified ↔
     // staged) that don't trigger fs events on their own.
     const id = setInterval(poll, 8000);
     return () => { mounted = false; clearInterval(id); };
-  }, [sessionId]);
+  }, [sessionId, pageVisible]);
 
   // Real-time tree refresh: bump filesRefreshKey on any fs event so adds /
   // deletes / renames appear in the tree within the WS debounce window

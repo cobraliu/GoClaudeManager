@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { SessionMeta, ScheduledTask } from "../api/sessionApi";
 import { createTask, cancelTask, updateTaskCommand, renameSession } from "../api/sessionApi";
+import { usePageVisible } from "../hooks/usePageVisible";
 import scheduleIcon from "../assets/schedule.svg";
 
 function _relTime(iso: string): string {
@@ -281,12 +282,17 @@ function TaskChip({ task, sessionId, onCancel }: { task: ScheduledTask; sessionI
   const [truncated, setTruncated] = useState(false);
   const [, setTick] = useState(0);
   const cmdRef = useRef<HTMLSpanElement>(null);
+  const pageVisible = usePageVisible();
 
-  // Update countdown every second locally without waiting for server poll
+  // Update countdown every second locally without waiting for server poll.
+  // Pause while the tab is hidden — a backgrounded list shouldn't re-render a
+  // countdown nobody can see; one tick on re-show resyncs it.
   useEffect(() => {
+    if (!pageVisible) return;
+    setTick((t) => t + 1);
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [pageVisible]);
 
   // Show the ▶/▼ "view full" toggle only when the one-line command is actually
   // clipped — measured live (chip width varies), not guessed from char count.

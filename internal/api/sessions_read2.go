@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -547,6 +548,95 @@ func proxyCacheDir(chatSID string) string {
 	return filepath.Join(home, ".claude", "cached_messages", chatSID)
 }
 
+// snapDirFold is the folded state of a proxy snapshot directory (file count,
+// newest mtime, total size) cached against the directory's own mtime. Snapshots
+// are written as new immutable {ts_ns}.json files (atomic temp+rename) and only
+// ever added or pruned — both of which bump the directory's mtime — so an
+// unchanged dir mtime guarantees the fold is unchanged. Existing snapshot files
+// are never rewritten, so per-file stats can be skipped on a dir-mtime hit.
+type snapDirFold struct {
+	dirMtimeNs int64
+	n          int64
+	mtime      int64
+	sz         int64
+	seenAt     time.Time
+}
+
+var (
+	snapFoldMu    sync.Mutex
+	snapFoldCache = map[string]snapDirFold{}
+)
+
+// foldSnapshotDir returns (count, newestMtimeNs, totalSize) for the snapshot dir,
+// reading the directory listing only when its mtime changed since the last call.
+// On the common idle poll (no new snapshot since last time) it costs a single
+// os.Stat instead of a ReadDir + one stat per file.
+func foldSnapshotDir(dir string) (n, mtime, sz int64) {
+	di, err := os.Stat(dir)
+	if err != nil {
+		// Dir gone/absent → drop any cached entry so it can't go stale.
+		snapFoldMu.Lock()
+		delete(snapFoldCache, dir)
+		snapFoldMu.Unlock()
+		return 0, 0, 0
+	}
+	dirMtimeNs := di.ModTime().UnixNano()
+	// Only trust the cache once the directory has been quiet for a moment. A
+	// filesystem with coarse (1s) directory-mtime granularity could otherwise
+	// give two snapshots written in the same second an identical dir mtime,
+	// hiding the second one behind a stale cache hit and freezing the live
+	// preview. Any in-progress stream writes within the last ~500ms, so a >2s
+	// quiet window guarantees we full-scan exactly when content is still moving,
+	// while idle sessions (the hot poll path) still take the cheap path.
+	quiet := time.Since(di.ModTime()) > 2*time.Second
+
+	if quiet {
+		snapFoldMu.Lock()
+		if c, ok := snapFoldCache[dir]; ok && c.dirMtimeNs == dirMtimeNs {
+			c.seenAt = time.Now()
+			snapFoldCache[dir] = c
+			snapFoldMu.Unlock()
+			return c.n, c.mtime, c.sz
+		}
+		snapFoldMu.Unlock()
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, 0, 0
+	}
+	for _, de := range entries {
+		name := de.Name()
+		if !strings.HasSuffix(name, ".json") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		fi, err := de.Info()
+		if err != nil {
+			continue
+		}
+		n++
+		sz += fi.Size()
+		if m := fi.ModTime().UnixNano(); m > mtime {
+			mtime = m
+		}
+	}
+
+	snapFoldMu.Lock()
+	snapFoldCache[dir] = snapDirFold{dirMtimeNs: dirMtimeNs, n: n, mtime: mtime, sz: sz, seenAt: time.Now()}
+	// Bound the cache: prune entries not touched in the last 30 min. Sessions are
+	// finite, but this keeps a long-lived process from accumulating dead chatSIDs.
+	if len(snapFoldCache) > 64 {
+		cutoff := time.Now().Add(-30 * time.Minute)
+		for k, v := range snapFoldCache {
+			if v.seenAt.Before(cutoff) {
+				delete(snapFoldCache, k)
+			}
+		}
+	}
+	snapFoldMu.Unlock()
+	return n, mtime, sz
+}
+
 // rawMessagesToken builds the opaque change token: JSONL size+mtime folded with
 // the proxy snapshot dir state (file count, newest mtime, total size). Mirrors
 // the token string in Python get_raw_messages.
@@ -558,23 +648,7 @@ func rawMessagesToken(jsonlPath, chatSID string) string {
 	}
 	var snapN, snapMtime, snapSz int64
 	if dir := proxyCacheDir(chatSID); dir != "" {
-		if entries, err := os.ReadDir(dir); err == nil {
-			for _, de := range entries {
-				name := de.Name()
-				if !strings.HasSuffix(name, ".json") || strings.HasPrefix(name, ".") {
-					continue
-				}
-				fi, err := de.Info()
-				if err != nil {
-					continue
-				}
-				snapN++
-				snapSz += fi.Size()
-				if m := fi.ModTime().UnixNano(); m > snapMtime {
-					snapMtime = m
-				}
-			}
-		}
+		snapN, snapMtime, snapSz = foldSnapshotDir(dir)
 	}
 	return fmt.Sprintf("%d:%d:%d:%d:%d", size, mtimeNs, snapN, snapMtime, snapSz)
 }

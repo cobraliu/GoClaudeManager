@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { DownloadExclusionModal } from "../components/DownloadExclusionModal";
 import { useWindowSize } from "../lib/useWindowSize";
+import { usePageVisible } from "../hooks/usePageVisible";
 import {
   listSessions,
   listSessionsStatus,
@@ -1585,6 +1586,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
   const [dockTodoHistory, setDockTodoHistory] = useState<TodoPlan[]>([]);
   const [dockActiveGoal, setDockActiveGoal] = useState<Goal | null>(null);
   const [dockGoalHistory, setDockGoalHistory] = useState<Goal[]>([]);
+  const pageVisible = usePageVisible();
   // Active-only combined fetch for the always-visible toolbar buttons — one
   // request, no history payload. This is the high-frequency (5s) poll.
   const refreshStatusBar = useCallback(async () => {
@@ -1621,16 +1623,23 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
       setDockTodos([]); setDockTodoHistory([]); setDockActiveGoal(null); setDockGoalHistory([]);
       return;
     }
+    if (!pageVisible) return; // a hidden tab doesn't need toolbar counts
+    // When BOTH the Tasks and Goals dock sections are open, the 1.5s dock poll
+    // below already refreshes both active todos and the active goal — so this
+    // toolbar poll would be pure duplication. Suspend it in that case (when only
+    // one section is open it still updates the other section's active count).
+    if (dockOpen.tasks && dockOpen.goals) return;
     refreshStatusBar();
     // 2s always-on poll for the toolbar task/goal counts (active-only, light).
     const id = setInterval(refreshStatusBar, 2000);
     return () => clearInterval(id);
-  }, [activeSessionId, isClaudeSession, refreshStatusBar]);
+  }, [activeSessionId, isClaudeSession, pageVisible, dockOpen.tasks, dockOpen.goals, refreshStatusBar]);
   // History is only rendered inside the dock, so fetch + refresh it only while
   // the Tasks/Goals section is open. The toolbar never needs history.
   useEffect(() => {
     if (!activeSessionId || !isClaudeSession) return;
     if (!dockOpen.tasks && !dockOpen.goals) return;
+    if (!pageVisible) return; // pause the dock poll while the tab is hidden
     const tick = () => {
       if (dockOpen.tasks) refreshDockTodos();
       if (dockOpen.goals) refreshDockGoals();
@@ -1641,7 +1650,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
     // appear near-real-time instead of lagging up to 5s.
     const id = setInterval(tick, 1500);
     return () => clearInterval(id);
-  }, [activeSessionId, isClaudeSession, dockOpen.tasks, dockOpen.goals, refreshDockTodos, refreshDockGoals]);
+  }, [activeSessionId, isClaudeSession, pageVisible, dockOpen.tasks, dockOpen.goals, refreshDockTodos, refreshDockGoals]);
 
   const { width: winW, height: winH } = useWindowSize();
 
