@@ -208,7 +208,7 @@ function TaskNotificationBlock({ text, ts }: { text: string; ts?: string }) {
             {outputFile && <div style={{ wordBreak: "break-all" }}><span style={{ opacity: 0.6 }}>output:</span> {outputFile}</div>}
           </div>
         )}
-        {ts && <div style={{ fontSize: 9, color: colors.text, opacity: 0.5, padding: "0 12px 5px" }}>{ts}</div>}
+        {ts && <div style={{ fontSize: 11, fontWeight: 600, color: colors.text, opacity: 0.8, padding: "0 12px 5px" }}>{ts}</div>}
       </div>
     </div>
   );
@@ -258,7 +258,7 @@ function SystemReminderBlock({ text, ts }: { text: string; ts?: string }) {
         }}>
           {expanded || !isLong ? inner : preview}
         </div>
-        {ts && <div style={{ fontSize: 9, color: "#f5d990", opacity: 0.6, marginTop: 4 }}>{ts}</div>}
+        {ts && <div style={{ fontSize: 11, fontWeight: 600, color: "#f5d990", opacity: 0.85, marginTop: 4 }}>{ts}</div>}
       </div>
     </div>
   );
@@ -270,7 +270,7 @@ function SlashCommandBubble({ cmd, args, ts }: { cmd: string; args: string; ts?:
       <div style={{ maxWidth: "85%", display: "inline-flex", alignItems: "flex-start", gap: 6, padding: "5px 10px", background: "rgba(88,166,255,0.08)", border: "1px solid rgba(88,166,255,0.3)", borderRadius: 10, fontSize: 12.5 }}>
         <span style={{ fontFamily: "monospace", color: "var(--accent-blue)", fontWeight: 600, flexShrink: 0 }}>{cmd}</span>
         {args && <span style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{args}</span>}
-        {ts && <span style={{ fontSize: 9, color: "var(--text-faint)", marginLeft: 4, flexShrink: 0, alignSelf: "flex-end" }}>{ts}</span>}
+        {ts && <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-muted)", marginLeft: 4, flexShrink: 0, alignSelf: "flex-end" }}>{ts}</span>}
       </div>
     </div>
   );
@@ -377,7 +377,7 @@ function UserBubble({ text, ts, sessionId, onRewind }: { text: string; ts?: stri
           {sessionId ? renderPromptWithImages(text, sessionId) : text}
         </div>
       </div>
-      {ts && <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 2, paddingRight: 2 }}>{ts}</div>}
+      {ts && <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", marginTop: 2, paddingRight: 2 }}>{ts}</div>}
     </div>
   );
 }
@@ -2857,7 +2857,7 @@ function CompactBoundaryBlock({ entry, summary, isNew }: { entry: RawMessage; su
               {meta.postTokens ? `→${meta.postTokens.toLocaleString()}` : ""}
             </span>
           )}
-          {ts && <span style={{ color: "var(--text-faintest)", fontSize: 10 }}>{ts}</span>}
+          {ts && <span style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 600 }}>{ts}</span>}
           {summary && (
             <span style={{ fontSize: 10, color: "var(--text-faint)", marginLeft: 2 }}>
               {expanded ? "▲" : "▼"}
@@ -2952,15 +2952,15 @@ function TurnUsage({ model, usage }: { model?: string; usage?: RawUsage }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", minWidth: 0 }}>
       {modelShort && (
-        <span style={{ fontSize: 10, color: "var(--text-faintest)", fontFamily: "monospace", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", flexShrink: 0 }}>
+        <span style={{ fontSize: 10, color: "var(--text-faint)", fontFamily: "monospace", background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 3, padding: "1px 6px", flexShrink: 0 }}>
           {modelShort}
         </span>
       )}
       {usage && (
         <span style={{ fontSize: 10, color: "var(--text-faint)", fontFamily: "monospace", whiteSpace: "nowrap" }}>
           <span title="input tokens">↑</span><span style={{ color: "var(--text-muted)" }}>{fmt(inp)}</span>
-          {cached > 0 && <span style={{ color: "var(--text-faintest)" }} title="cache read">♻{fmt(cached)}</span>}
-          {created > 0 && <span style={{ color: "var(--text-faintest)" }} title="cache write">+{fmt(created)}</span>}
+          {cached > 0 && <span style={{ color: "var(--text-faint)" }} title="cache read">♻{fmt(cached)}</span>}
+          {created > 0 && <span style={{ color: "var(--text-faint)" }} title="cache write">+{fmt(created)}</span>}
           <span title="output tokens">·↓</span><span style={{ color: "var(--text-muted)" }}>{fmt(out)}</span>
         </span>
       )}
@@ -3870,7 +3870,7 @@ const MessageEntry = React.memo(function MessageEntry({
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", flex: 1, minWidth: 0 }}>
               {msg.usage && <TurnUsage model={msg.model} usage={msg.usage} />}
             </div>
-            {ts && <span style={{ fontSize: 10, color: "var(--text-faintest)", flexShrink: 0 }}>{ts}</span>}
+            {ts && <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", flexShrink: 0 }}>{ts}</span>}
           </div>
         )}
       </div>

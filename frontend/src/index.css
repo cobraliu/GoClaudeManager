@@ -21,14 +21,16 @@
   --border:        #444c56;
   --border-subtle: #373e47;
   --border-strong: #545d68;
-  /* text — softer than near-white, easier on dark bg */
+  /* text — softer than near-white, but kept above WCAG-readable contrast
+     on the dark surfaces (muted/faint/faintest were previously 1.5–3.1,
+     too low for token stats, tool labels and timestamps). */
   --text-bright:   #cdd9e5;
   --text-body:     #adbac7;
   --text-primary:  #adbac7;
-  --text-secondary:#768390;
-  --text-muted:    #636e7b;
-  --text-faint:    #545d68;
-  --text-faintest: #444c56;
+  --text-secondary:#9aa5b1;
+  --text-muted:    #959fab;
+  --text-faint:    #828d99;
+  --text-faintest: #727d89;
   /* accents */
   --accent-blue:  #539bf5;
   --accent-green: #57ab5a;
@@ -61,10 +63,10 @@
   --text-bright:   #1c1e24;
   --text-body:     #30333c;
   --text-primary:  #30333c;
-  --text-secondary:#50545f;
-  --text-muted:    #6b6f7b;
-  --text-faint:    #868a96;
-  --text-faintest: #a0a4ae;
+  --text-secondary:#4b4f5a;
+  --text-muted:    #525663;
+  --text-faint:    #646977;
+  --text-faintest: #777c8b;
   --accent-blue:  #1a6fd4;
   --accent-green: #1c7a36;
   --accent-red:   #c82828;
