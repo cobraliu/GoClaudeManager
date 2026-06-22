@@ -44,6 +44,8 @@ import {
   readFile,
   sqliteQuery,
   sqliteExec,
+  columnarQuery,
+  getSessionProcesses,
   createTerminal,
   deleteTerminal,
   heartbeatTerminal,
@@ -95,6 +97,8 @@ import {
   type ScheduledTask,
   type FileEntry,
   type SqliteInfo,
+  type ColumnarInfo,
+  type ProcessInfo,
   type AvailableClaudeSession,
   type UsageInfo,
   type TuiAuqData,
@@ -3045,6 +3049,127 @@ function MobileAuqsPanel({
   );
 }
 
+/* ─── Mobile Procs Panel ─── */
+const MOBILE_PROCS_POLL_MS = 3000;
+function procFmtBytes(n: number): string {
+  if (!n) return "0";
+  const u = ["B", "K", "M", "G", "T"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)}${u[i]}`;
+}
+function procFmtUptime(sec: number): string {
+  if (sec < 60) return `${Math.round(sec)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h${Math.floor((sec % 3600) / 60)}m`;
+  return `${Math.floor(sec / 86400)}d${Math.floor((sec % 86400) / 3600)}h`;
+}
+function procCpuColor(pct: number): string {
+  if (pct >= 80) return "var(--accent-red)";
+  if (pct >= 30) return "var(--accent-amber)";
+  if (pct >= 5) return "var(--accent-green)";
+  return "var(--text-secondary)";
+}
+
+function MobileProcRow({ p }: { p: ProcessInfo }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail = !!p.cmdline || !!p.stdout_file || !!p.stderr_file;
+  const logBlock = (label: string, file?: string, tail?: string[]) => {
+    if (!file) return null;
+    return (
+      <div style={{ marginTop: 8 }}>
+        <div style={{ fontSize: 11, color: "var(--text-faint)" }}>
+          {label}: <span style={{ color: "var(--text-secondary)", fontFamily: "monospace", wordBreak: "break-all" }}>{file}</span>
+        </div>
+        {tail && tail.length > 0 && (
+          <pre style={{
+            margin: "4px 0 0", padding: "6px 8px", background: "var(--bg-base)",
+            border: "1px solid var(--border-subtle)", borderRadius: 4,
+            fontSize: 11, lineHeight: 1.5, color: "var(--text-muted)",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+            whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 200, overflowY: "auto",
+          }}>{tail.join("\n")}</pre>
+        )}
+      </div>
+    );
+  };
+  return (
+    <div style={{ borderBottom: "1px solid var(--border-subtle)", padding: "10px 14px" }}>
+      <div
+        onClick={() => hasDetail && setExpanded((v) => !v)}
+        style={{ display: "flex", alignItems: "center", gap: 8, cursor: hasDetail ? "pointer" : "default" }}
+      >
+        <span style={{ fontSize: 10, color: "var(--text-faint)", width: 10, flexShrink: 0 }}>
+          {hasDetail ? (expanded ? "▼" : "▶") : ""}
+        </span>
+        <span style={{
+          fontWeight: 600, color: p.is_root ? "var(--accent-blue)" : "var(--text-body)",
+          fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 150,
+        }} title={p.comm}>
+          {p.comm || "?"}{p.is_root ? " ·root" : ""}
+        </span>
+        <span style={{ fontSize: 11, color: "var(--text-faint)", fontFamily: "monospace", flexShrink: 0 }}>{p.pid}</span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 9, fontSize: 11, fontFamily: "monospace", flexShrink: 0 }}>
+          <span style={{ color: procCpuColor(p.cpu_percent), fontWeight: 600 }} title="CPU% (100 = one core)">{p.cpu_percent.toFixed(0)}%</span>
+          <span style={{ color: "var(--text-secondary)" }} title={`RSS ${procFmtBytes(p.rss_bytes)} · ${p.mem_percent.toFixed(1)}% of RAM`}>{procFmtBytes(p.rss_bytes)}</span>
+          <span style={{ color: "var(--text-faint)" }} title="uptime">{procFmtUptime(p.uptime_seconds)}</span>
+        </span>
+      </div>
+      {expanded && hasDetail && (
+        <div style={{ marginTop: 8, paddingLeft: 18 }}>
+          <div style={{
+            fontSize: 11.5, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+            color: "var(--text-secondary)", wordBreak: "break-all", whiteSpace: "pre-wrap", lineHeight: 1.45,
+          }}>{p.cmdline}</div>
+          {logBlock("stdout", p.stdout_file, p.stdout_tail)}
+          {logBlock("stderr", p.stderr_file, p.stderr_tail)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MobileProcsPanel({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  const [procs, setProcs] = useState<ProcessInfo[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const pageVisible = usePageVisible();
+  const refresh = useCallback(async () => {
+    try { const snap = await getSessionProcesses(sessionId, 30); setProcs(snap.processes || []); }
+    catch { /* ignore */ }
+    finally { setLoaded(true); }
+  }, [sessionId]);
+  useEffect(() => {
+    refresh();
+    if (!pageVisible) return; // hidden tab: catch-up fetch above runs, no interval
+    const id = setInterval(refresh, MOBILE_PROCS_POLL_MS);
+    return () => clearInterval(id);
+  }, [refresh, pageVisible]);
+
+  // Root pinned on top, then by CPU% desc.
+  const sorted = [...procs].sort((a, b) =>
+    (b.is_root ? 1 : 0) - (a.is_root ? 1 : 0) || b.cpu_percent - a.cpu_percent
+  );
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "var(--bg-base)", zIndex: 200, display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "12px 16px", background: "var(--bg-surface)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <button onClick={onClose} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", fontSize: 22, padding: "0 4px", cursor: "pointer", lineHeight: 1 }}>‹</button>
+        <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>Procs {loaded ? `(${procs.length})` : ""}</span>
+        <button onClick={refresh} title="Refresh" style={{ marginLeft: "auto", background: "transparent", border: "1px solid var(--border)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 12, padding: "2px 8px", borderRadius: 4 }}>⟳</button>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto" }}>
+        {!loaded ? (
+          <div style={{ color: "var(--text-faint)", textAlign: "center", padding: 24, fontSize: 13 }}>Loading…</div>
+        ) : sorted.length === 0 ? (
+          <div style={{ color: "var(--text-faint)", textAlign: "center", padding: 24, fontSize: 13 }}>No child processes</div>
+        ) : (
+          sorted.map((p) => <MobileProcRow key={p.pid} p={p} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ─── Mobile Shell Panel ─── */
 function MobileResumeSelectPanel({
   sessionId,
@@ -3592,12 +3717,14 @@ function mobileFormatSize(bytes: number): string {
   return `${(bytes/1048576).toFixed(1)}M`;
 }
 
-type MobileFileKind = "code" | "markdown" | "csv" | "sqlite" | "pdf" | "image" | "video" | "audio" | "html" | "text";
+type MobileFileKind = "code" | "markdown" | "csv" | "sqlite" | "columnar" | "pdf" | "image" | "video" | "audio" | "html" | "text";
 const MOBILE_VIDEO_EXTS = ["mp4","webm","ogv","mov","m4v","mkv"];
 const MOBILE_AUDIO_EXTS = ["mp3","wav","ogg","oga","m4a","aac","flac","opus"];
+const MOBILE_COLUMNAR_EXTS = ["parquet","pq","arrow","feather","ipc"];
 function getMobileFileKind(entry: FileEntry): MobileFileKind {
   if (entry.is_sqlite) return "sqlite";
   const ext = entry.name.split(".").pop()?.toLowerCase() || "";
+  if (MOBILE_COLUMNAR_EXTS.includes(ext)) return "columnar";
   if (ext === "pdf") return "pdf";
   if (ext === "csv" || ext === "tsv") return "csv";
   if (ext === "md" || ext === "markdown") return "markdown";
@@ -3892,6 +4019,88 @@ function MobileSqliteViewer({ sessionId, path }: { sessionId: string; path: stri
           </tbody>
         </table>
         {info.total > 200 && <div style={{ padding: "8px 12px", color: "var(--text-muted)", fontSize: 11 }}>Showing 200 of {info.total} rows</div>}
+      </div>
+    </div>
+  );
+}
+
+// Read-only paginated table view of a parquet / arrow (Feather/IPC) file. The
+// backend rejects oversized files (413) — that message surfaces in `err`.
+function MobileColumnarViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  const [info, setInfo] = useState<ColumnarInfo | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [cell, setCell] = useState<{ col: string; val: string } | null>(null);
+  const PAGE = 100;
+
+  const load = useCallback(async (off: number) => {
+    setLoading(true); setErr("");
+    try {
+      const r = await columnarQuery(sessionId, path, PAGE, off);
+      setInfo(r); setOffset(off);
+    } catch (e) { setErr(String(e).replace(/^Error:\s*/, "")); }
+    finally { setLoading(false); }
+  }, [sessionId, path]);
+
+  useEffect(() => { load(0); }, [load]);
+
+  if (loading && !info) return <div style={{ padding: 24, color: "var(--text-muted)", textAlign: "center" }}>Loading…</div>;
+  if (err) return <div style={{ padding: 16, color: "var(--accent-red)", fontSize: 13, whiteSpace: "pre-wrap" }}>{err}</div>;
+  if (!info) return null;
+
+  const totalPages = Math.max(1, Math.ceil((info.total || 0) / PAGE));
+  const page = Math.floor(offset / PAGE);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+      {cell && (
+        <div onClick={() => setCell(null)} style={{ position: "fixed", inset: 0, zIndex: 240, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: 8, padding: 14, width: "100%", maxWidth: 560, maxHeight: "75vh", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>{cell.col}</span>
+              <button onClick={() => setCell(null)} style={{ background: "var(--bg-hover)", border: "1px solid var(--border)", color: "var(--text-secondary)", fontSize: 12, padding: "2px 10px", borderRadius: 4 }}>✕</button>
+            </div>
+            <div style={{ overflow: "auto", fontFamily: "monospace", fontSize: 12, color: "var(--text-primary)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{cell.val}</div>
+          </div>
+        </div>
+      )}
+      <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 8, flexShrink: 0, fontSize: 11, color: "var(--text-muted)" }}>
+        <span style={{ fontFamily: "monospace", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--accent-blue)" }}>{info.format}</span>
+        <span style={{ color: "var(--text-secondary)" }}>{info.columns.length} cols</span>
+        <span style={{ marginLeft: "auto" }}>{info.total.toLocaleString()} rows{loading ? " · …" : ""}</span>
+      </div>
+      <div style={{ overflow: "auto", flex: 1 }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%", whiteSpace: "nowrap" }}>
+          <thead>
+            <tr style={{ background: "var(--bg-surface)", position: "sticky", top: 0 }}>
+              <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--text-faint)", textAlign: "right", fontFamily: "monospace" }}>#</th>
+              {info.columns.map((c, i) => <th key={i} style={{ padding: "6px 10px", borderBottom: "1px solid var(--border)", color: "var(--text-secondary)", textAlign: "left" }}>{c}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {info.rows.map((row, ri) => (
+              <tr key={ri} style={{ background: ri % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+                <td style={{ padding: "4px 8px", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-faint)", fontFamily: "monospace", textAlign: "right", userSelect: "none" }}>{offset + ri + 1}</td>
+                {(row as unknown[]).map((c, ci) => {
+                  const s = c == null ? null : String(c);
+                  return (
+                    <td key={ci}
+                      onClick={() => s != null && setCell({ col: info.columns[ci], val: s })}
+                      style={{ padding: "4px 10px", borderBottom: "1px solid var(--border-subtle)", color: s == null ? "var(--text-faint)" : (s.length > 40 ? "var(--accent-blue)" : "var(--text-primary)"), fontFamily: "monospace", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", cursor: s == null ? "default" : "pointer" }}>
+                      {s == null ? "NULL" : s}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ padding: "8px 12px", borderTop: "1px solid var(--border-subtle)", display: "flex", gap: 10, alignItems: "center", fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>
+        <button disabled={page === 0 || loading} onClick={() => load(Math.max(0, offset - PAGE))} style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", fontSize: 12, padding: "4px 12px", borderRadius: 4, border: "1px solid var(--border)", opacity: page === 0 ? 0.4 : 1 }}>‹ Prev</button>
+        <span>{page + 1}/{totalPages}</span>
+        <button disabled={page >= totalPages - 1 || loading} onClick={() => load(offset + PAGE)} style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", fontSize: 12, padding: "4px 12px", borderRadius: 4, border: "1px solid var(--border)", opacity: page >= totalPages - 1 ? 0.4 : 1 }}>Next ›</button>
       </div>
     </div>
   );
@@ -4223,6 +4432,7 @@ function MobileFileBrowserPanel({
     setConvertTarget("raw");
     if (entry.is_sqlite) return;
     const kind = getMobileFileKind(entry);
+    if (kind === "columnar") return; // viewer fetches its own paginated rows
     if (kind === "pdf" || kind === "image") {
       try {
         const url = await fetchRawFileBlob(sessionId, entry.path);
@@ -4329,7 +4539,7 @@ function MobileFileBrowserPanel({
         );
       }
       const mk = getMobileFileKind(entry);
-      const clickable = entry.is_text || entry.is_sqlite || mk === "pdf" || mk === "image" || mk === "video" || mk === "audio";
+      const clickable = entry.is_text || entry.is_sqlite || mk === "columnar" || mk === "pdf" || mk === "image" || mk === "video" || mk === "audio";
       return (
         <div key={entry.path}
           onClick={() => { if (longPressFired.current) return; if (clickable) openFile(entry); }}
@@ -4399,6 +4609,7 @@ function MobileFileBrowserPanel({
                 <pre style={{ flex: 1, overflow: "auto", margin: 0, padding: 16, fontSize: 13, color: "var(--text-primary)", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{fileContent}</pre>
               )}
               {kind === "sqlite" && <MobileSqliteViewer sessionId={sessionId} path={previewEntry.path} />}
+              {kind === "columnar" && <MobileColumnarViewer sessionId={sessionId} path={previewEntry.path} />}
               {kind === "pdf" && (
                 blobUrl
                   ? <iframe src={blobUrl} style={{ flex: 1, border: "none" }} title={previewEntry.name} />
@@ -5142,6 +5353,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
   const [showTasks, setShowTasks] = useState(false);
   const [showGoals, setShowGoals] = useState(false);
   const [showAuqs, setShowAuqs] = useState(false);
+  const [showProcs, setShowProcs] = useState(false);
   const [shellOpen, setShellOpen] = useState(false);
   const [shellMinimized, setShellMinimized] = useState(false);
   const [showResumeSelect, setShowResumeSelect] = useState(false);
@@ -5210,12 +5422,14 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
   const showTasksRef = useRef(false);
   const showGoalsRef = useRef(false);
   const showAuqsRef = useRef(false);
+  const showProcsRef = useRef(false);
   showGitRef.current = showGit;
   showScheduleRef.current = showSchedule;
   showFilesRef.current = showFiles;
   showTasksRef.current = showTasks;
   showGoalsRef.current = showGoals;
   showAuqsRef.current = showAuqs;
+  showProcsRef.current = showProcs;
   shellOpenRef.current = shellOpen;
   showResumeSelectRef.current = showResumeSelect;
   showModelPickerRef.current = showModelPicker;
@@ -5233,6 +5447,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
       if (showTasksRef.current) { setShowTasks(false); return; }
       if (showGoalsRef.current) { setShowGoals(false); return; }
       if (showAuqsRef.current) { setShowAuqs(false); return; }
+      if (showProcsRef.current) { setShowProcs(false); return; }
       if (shellOpenRef.current) { setShellOpen(false); setShellMinimized(false); return; }
       if (showResumeSelectRef.current) { setShowResumeSelect(false); return; }
       if (showModelPickerRef.current) { setShowModelPicker(false); return; }
@@ -5251,6 +5466,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
   useEffect(() => { if (showTasks) history.pushState({ mobileDetail: true, sub: "tasks" }, ""); }, [showTasks]);
   useEffect(() => { if (showGoals) history.pushState({ mobileDetail: true, sub: "goals" }, ""); }, [showGoals]);
   useEffect(() => { if (showAuqs) history.pushState({ mobileDetail: true, sub: "auqs" }, ""); }, [showAuqs]);
+  useEffect(() => { if (showProcs) history.pushState({ mobileDetail: true, sub: "procs" }, ""); }, [showProcs]);
   useEffect(() => { if (showFiles) history.pushState({ mobileDetail: true, sub: "files" }, ""); }, [showFiles]);
   useEffect(() => { if (shellOpen) history.pushState({ mobileDetail: true, sub: "shell" }, ""); }, [shellOpen]);
   useEffect(() => { if (showResumeSelect) history.pushState({ mobileDetail: true, sub: "resumeSelect" }, ""); }, [showResumeSelect]);
@@ -5396,6 +5612,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
             { icon: <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: -0.3 }}>☑</span>, title: "Tasks", onClick: () => setShowTasks(true), color: iconMuted, bg: "transparent" },
             { icon: <span style={{ fontSize: 11, fontWeight: 700 }}>◎</span>, title: "Goals", onClick: () => setShowGoals(true), color: iconMuted, bg: "transparent" },
             { icon: <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: -0.2 }}>Q?</span>, title: "AUQs", onClick: () => setShowAuqs(true), color: iconMuted, bg: "transparent" },
+            { icon: <span style={{ fontSize: 12, fontWeight: 700 }}>⚙</span>, title: "Procs", onClick: () => setShowProcs(true), color: iconMuted, bg: "transparent" },
             {
               icon: <span style={{ fontSize: 10, fontWeight: 700 }}>{modelLabel}</span>,
               title: `Model: ${session.model || "default"}`,
@@ -5515,6 +5732,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
       {showTasks && <MobileTasksPanel sessionId={session.id} onClose={() => history.back()} />}
       {showGoals && <MobileGoalsPanel sessionId={session.id} onClose={() => history.back()} />}
       {showAuqs && <MobileAuqsPanel sessionId={session.id} onClose={() => history.back()} />}
+      {showProcs && <MobileProcsPanel sessionId={session.id} onClose={() => history.back()} />}
       {showJsonl && (
         <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: "var(--bg-base)", display: "flex", flexDirection: "column" }}>
           <JsonlPreviewModal
