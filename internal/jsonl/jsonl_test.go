@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // writeJSONL writes lines (each already a JSON object) joined by newlines.
@@ -541,6 +542,84 @@ func TestListSubagentSummaries(t *testing.T) {
 	}
 	if byID["run"].Status != "running" {
 		t.Errorf("run.Status = %q, want running", byID["run"].Status)
+	}
+}
+
+// TestListAllSubagentSummariesForCwd verifies the cwd-wide merge: sub-agents
+// from a session's CURRENT transcript and a ROTATED one (whose parent file was
+// removed on compaction) are both surfaced, while a sibling session's transcript
+// is excluded.
+func TestListAllSubagentSummariesForCwd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := "/proj/y"
+	base := filepath.Join(home, ".claude", "projects", "-proj-y")
+
+	asst := func(ts, stop string) string {
+		return `{"type":"assistant","timestamp":"` + ts + `","message":{"role":"assistant","model":"claude-opus-4-8","stop_reason":"` + stop + `","usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"text","text":"out"}]}}`
+	}
+
+	// Current transcript (parent file present) with one sub-agent.
+	cur := "sess-current"
+	writeFile(t, filepath.Join(base, cur+".jsonl"),
+		`{"type":"assistant","timestamp":"2024-01-01T10:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu_cur","name":"Task","input":{}}]}}`+"\n")
+	writeFile(t, filepath.Join(base, cur, "subagents", "agent-cur.meta.json"),
+		`{"agentType":"general-purpose","description":"current","toolUseId":"tu_cur"}`)
+	writeFile(t, filepath.Join(base, cur, "subagents", "agent-cur.jsonl"), asst("2024-01-01T10:00:10.000Z", "end_turn")+"\n")
+
+	// Rotated transcript: NO parent .jsonl (compaction removed it), but its
+	// subagents/ dir remains. Status must fall back to the mtime heuristic.
+	old := "sess-rotated"
+	writeFile(t, filepath.Join(base, old, "subagents", "agent-old.meta.json"),
+		`{"agentType":"Explore","description":"historical","toolUseId":"tu_old"}`)
+	writeFile(t, filepath.Join(base, old, "subagents", "agent-old.jsonl"), asst("2024-01-01T09:00:10.000Z", "end_turn")+"\n")
+
+	// Sibling session in the same cwd — must be excluded.
+	sib := "sess-sibling"
+	writeFile(t, filepath.Join(base, sib, "subagents", "agent-sib.meta.json"),
+		`{"agentType":"Plan","description":"sibling","toolUseId":"tu_sib"}`)
+	writeFile(t, filepath.Join(base, sib, "subagents", "agent-sib.jsonl"), asst("2024-01-01T11:00:10.000Z", "end_turn")+"\n")
+
+	// Backdate both transcripts so the stale-heuristic marks them done.
+	old10 := time.Now().Add(-10 * time.Minute)
+	for _, p := range []string{
+		filepath.Join(base, cur, "subagents", "agent-cur.jsonl"),
+		filepath.Join(base, old, "subagents", "agent-old.jsonl"),
+	} {
+		if err := os.Chtimes(p, old10, old10); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := NewCache()
+	got := c.ListAllSubagentSummariesForCwd(cwd, map[string]bool{sib: true})
+
+	ids := map[string]string{}
+	for _, s := range got {
+		ids[s.AgentID] = s.Status
+	}
+	if _, ok := ids["cur"]; !ok {
+		t.Errorf("current-transcript sub-agent missing; got %v", ids)
+	}
+	if _, ok := ids["old"]; !ok {
+		t.Errorf("rotated-transcript sub-agent missing (the bug being fixed); got %v", ids)
+	}
+	if _, ok := ids["sib"]; ok {
+		t.Errorf("sibling session's sub-agent must be excluded; got %v", ids)
+	}
+
+	// The orphaned (parent-gone) agent resolves status via the mtime heuristic.
+	if ids["old"] != "done" {
+		t.Errorf("rotated sub-agent status = %q, want done", ids["old"])
+	}
+
+	// Content lookup must also reach the rotated transcript.
+	lines := GetSubagentLinesForCwd(cwd, "old", 0, map[string]bool{sib: true})
+	if lines.Total != 1 {
+		t.Errorf("GetSubagentLinesForCwd(old) total = %d, want 1", lines.Total)
+	}
+	if got := GetSubagentLinesForCwd(cwd, "sib", 0, map[string]bool{sib: true}); got.Total != 0 {
+		t.Errorf("sibling agent content must not be reachable; total = %d", got.Total)
 	}
 }
 

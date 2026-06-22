@@ -385,12 +385,15 @@ func getSubagents(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	chatSID := resolveChatSID(d, s)
-	if chatSID == "" {
+	if s.Tool != "claude" {
 		writeJSON(w, http.StatusOK, []jsonl.SubagentSummary{})
 		return
 	}
-	writeJSON(w, http.StatusOK, d.JSONL.ListSubagentSummaries(chatSID, s.Cwd))
+	// Scan EVERY transcript this session owns in the cwd (current + rotated/
+	// compacted ones), excluding sibling-session ids, so sub-agents from a
+	// session's full history are surfaced — not just its live transcript.
+	exclude, _ := d.Store.GetAllAgentSessionIDs(s.ID)
+	writeJSON(w, http.StatusOK, d.JSONL.ListAllSubagentSummariesForCwd(s.Cwd, exclude))
 }
 
 func getSubagentContent(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -399,8 +402,7 @@ func getSubagentContent(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := chi.URLParam(r, "agentID")
-	chatSID := resolveChatSID(d, s)
-	if chatSID == "" {
+	if s.Tool != "claude" {
 		writeErr(w, http.StatusNotFound, "no claude session")
 		return
 	}
@@ -408,7 +410,10 @@ func getSubagentContent(d Deps, w http.ResponseWriter, r *http.Request) {
 	if fromLine < 0 {
 		fromLine = 0
 	}
-	writeJSON(w, http.StatusOK, jsonl.GetSubagentLines(chatSID, s.Cwd, agentID, fromLine))
+	// Match getSubagents: locate the agent under any of the session's own
+	// transcripts (current or rotated), excluding sibling-owned ids.
+	exclude, _ := d.Store.GetAllAgentSessionIDs(s.ID)
+	writeJSON(w, http.StatusOK, jsonl.GetSubagentLinesForCwd(s.Cwd, agentID, fromLine, exclude))
 }
 
 // ── GET /{id}/raw-messages ───────────────────────────────────────────────────

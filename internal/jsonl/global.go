@@ -71,6 +71,30 @@ func isDir(p string) bool {
 	return err == nil && fi.IsDir()
 }
 
+func isFile(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
+}
+
+// claudeProjectDir resolves cwd to its ~/.claude/projects/<encoded> dir, trying
+// both the underscore-collapsed and plain slash encodings. "" if neither exists.
+func claudeProjectDir(cwd string) string {
+	base := projectsDir()
+	if base == "" {
+		return ""
+	}
+	cwd = strings.TrimRight(cwd, "/")
+	for _, encoded := range []string{
+		strings.ReplaceAll(strings.ReplaceAll(cwd, "/", "-"), "_", "-"),
+		strings.ReplaceAll(cwd, "/", "-"),
+	} {
+		if p := filepath.Join(base, encoded); isDir(p) {
+			return p
+		}
+	}
+	return ""
+}
+
 // groupAndSort folds a cwd→sessions map into the sorted group list shared by the
 // claude and cursor global listers.
 func groupAndSort(byCwd map[string][]GlobalSession) []GlobalSessionGroup {
@@ -423,7 +447,39 @@ func GetSubagentLines(claudeSessionID, cwd, agentID string, fromLine int) Subage
 	if dir == "" {
 		return empty
 	}
-	jsonlFile := filepath.Join(dir, "agent-"+agentID+".jsonl")
+	return readSubagentLines(filepath.Join(dir, "agent-"+agentID+".jsonl"), fromLine)
+}
+
+// GetSubagentLinesForCwd reads a sub-agent transcript located under ANY of cwd's
+// transcript dirs not owned by another session (exclude). This is the historical
+// counterpart of GetSubagentLines: it finds agents that ran under a rotated
+// session id, which the current-transcript-only lookup cannot reach.
+func GetSubagentLinesForCwd(cwd, agentID string, fromLine int, exclude map[string]bool) SubagentLines {
+	empty := SubagentLines{Lines: []string{}, Total: 0}
+	projPath := claudeProjectDir(cwd)
+	if projPath == "" {
+		return empty
+	}
+	entries, err := os.ReadDir(projPath)
+	if err != nil {
+		return empty
+	}
+	for _, e := range entries {
+		if !e.IsDir() || exclude[e.Name()] {
+			continue
+		}
+		f := filepath.Join(projPath, e.Name(), "subagents", "agent-"+agentID+".jsonl")
+		if isFile(f) {
+			return readSubagentLines(f, fromLine)
+		}
+	}
+	return empty
+}
+
+// readSubagentLines returns the JSONL lines of one sub-agent transcript from
+// fromLine onward, plus the total line count.
+func readSubagentLines(jsonlFile string, fromLine int) SubagentLines {
+	empty := SubagentLines{Lines: []string{}, Total: 0}
 	f, err := os.Open(jsonlFile)
 	if err != nil {
 		return empty
@@ -492,6 +548,67 @@ func (c *Cache) ListSubagentSummaries(claudeSessionID, cwd string) []SubagentSum
 		return []SubagentSummary{}
 	}
 	dir := filepath.Join(filepath.Dir(parentPath), claudeSessionID, "subagents")
+	return c.subagentSummariesFromDir(dir, c.parentToolResults(parentPath))
+}
+
+// ListAllSubagentSummariesForCwd merges sub-agent summaries from EVERY transcript
+// in cwd's Claude project dir whose session id is not in `exclude` (the set owned
+// by OTHER sessions). The current-transcript-only ListSubagentSummaries misses
+// sub-agents orphaned under a rotated/compacted session id once Claude removed
+// the old transcript file — this surfaces a session's full sub-agent history.
+// Attribution mirrors resolveChatSID's recovery rule: a transcript not claimed by
+// another session belongs to (or is recoverable by) this one. Deduped by agentId,
+// sorted newest-first. Returns a non-nil (possibly empty) slice.
+func (c *Cache) ListAllSubagentSummariesForCwd(cwd string, exclude map[string]bool) []SubagentSummary {
+	projPath := claudeProjectDir(cwd)
+	if projPath == "" {
+		return []SubagentSummary{}
+	}
+	entries, err := os.ReadDir(projPath)
+	if err != nil {
+		return []SubagentSummary{}
+	}
+
+	results := []SubagentSummary{}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue // transcript .jsonl files; the session dirs hold subagents/
+		}
+		sid := e.Name()
+		if exclude[sid] {
+			continue // owned by another session — never cross-contaminate
+		}
+		dir := filepath.Join(projPath, sid, "subagents")
+		if !isDir(dir) {
+			continue
+		}
+		// Authoritative status comes from the parent transcript's Task
+		// tool_results when that transcript still exists; for a transcript whose
+		// file was removed on compaction the per-agent mtime/stop_reason
+		// heuristic stands in (those agents are terminal anyway).
+		var parentResults map[string]bool
+		if pp := filepath.Join(projPath, sid+".jsonl"); isFile(pp) {
+			parentResults = c.parentToolResults(pp)
+		}
+		for _, su := range c.subagentSummariesFromDir(dir, parentResults) {
+			if seen[su.AgentID] {
+				continue
+			}
+			seen[su.AgentID] = true
+			results = append(results, su)
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Mtime > results[j].Mtime
+	})
+	return results
+}
+
+// subagentSummariesFromDir builds enriched summaries for all agent-*.meta.json in
+// a single subagents/ directory. parentResults may be nil when the parent
+// transcript is gone (status then falls back to the mtime heuristic).
+func (c *Cache) subagentSummariesFromDir(dir string, parentResults map[string]bool) []SubagentSummary {
 	if !isDir(dir) {
 		return []SubagentSummary{}
 	}
@@ -499,9 +616,6 @@ func (c *Cache) ListSubagentSummaries(claudeSessionID, cwd string) []SubagentSum
 	if err != nil {
 		return []SubagentSummary{}
 	}
-
-	// Authoritative status source: the parent's Task tool_result map.
-	parentResults := c.parentToolResults(parentPath)
 	now := float64(time.Now().Unix())
 
 	var metaNames []string
