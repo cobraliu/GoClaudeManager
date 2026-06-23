@@ -326,6 +326,26 @@ func (s *Store) ClearAgentSessionID(id string) error {
 	}
 	return err
 }
+// SetAgentSessionID sets agent_session_id to a nullable value (nil → NULL).
+// Unlike UpdateAgentSessionID (which only sets a concrete value), this supports
+// admin edits and clears in one call.
+func (s *Store) SetAgentSessionID(id string, v *string) error {
+	err := s.execTouch(`UPDATE sessions SET agent_session_id = ?, updated_at = ? WHERE id = ?`, v, id)
+	if err == nil {
+		logWrite(id, "agent_session_id", ptrVal(v))
+	}
+	return err
+}
+
+// SetResumeSessionID sets resume_session_id to a nullable value (nil → NULL).
+func (s *Store) SetResumeSessionID(id string, v *string) error {
+	err := s.execTouch(`UPDATE sessions SET resume_session_id = ?, updated_at = ? WHERE id = ?`, v, id)
+	if err == nil {
+		logWrite(id, "resume_session_id", ptrVal(v))
+	}
+	return err
+}
+
 func (s *Store) UpdateProject(id, project string) error {
 	err := s.execTouch(`UPDATE sessions SET project = ?, updated_at = ? WHERE id = ?`, project, id)
 	if err == nil {

@@ -55,6 +55,8 @@ var ansiEscapeRe = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
 func registerReadExtraRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}/search", func(w http.ResponseWriter, r *http.Request) { searchSession(d, w, r) })
 	r.Get("/{id}/conversation/jsonl", func(w http.ResponseWriter, r *http.Request) { conversationJSONL(d, w, r) })
+	r.Get("/{id}/conversation/download", func(w http.ResponseWriter, r *http.Request) { conversationDownload(d, w, r) })
+	r.Get("/{id}/conversation/bundle", func(w http.ResponseWriter, r *http.Request) { conversationBundle(d, w, r) })
 	r.Get("/{id}/available-claude-sessions", func(w http.ResponseWriter, r *http.Request) { availableClaudeSessions(d, w, r) })
 	r.Get("/{id}/subagents", func(w http.ResponseWriter, r *http.Request) { getSubagents(d, w, r) })
 	r.Get("/{id}/subagents/{agentID}", func(w http.ResponseWriter, r *http.Request) { getSubagentContent(d, w, r) })

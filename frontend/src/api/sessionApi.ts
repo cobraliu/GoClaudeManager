@@ -623,6 +623,18 @@ export function setClaudeSessionId(sessionId: string, agentSessionId: string): P
   });
 }
 
+// Admin-only: override a session's transcript-resolution keys. Only the keys
+// present in `body` are written; an empty string clears the field (NULL).
+export function updateSessionIdentity(
+  sessionId: string,
+  body: { resume_session_id?: string; agent_session_id?: string },
+): Promise<SessionMeta> {
+  return request(`/api/sessions/${sessionId}/identity`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 export interface SearchResult {
   line: number;
   text: string;
@@ -806,6 +818,47 @@ export async function downloadFile(sessionId: string, path: string): Promise<voi
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Trigger a browser "save as" for a fetched response, honoring the server's
+// Content-Disposition filename when present, else `fallbackName`.
+async function triggerBlobDownload(resp: Response, fallbackName: string): Promise<void> {
+  if (resp.status === 401) { localStorage.removeItem("token"); window.location.reload(); throw new Error("unauthorized"); }
+  if (!resp.ok) throw new Error(await resp.text().catch(() => `HTTP ${resp.status}`));
+  let name = fallbackName;
+  const cd = resp.headers.get("Content-Disposition") || "";
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  const plain = /filename="?([^";]+)"?/i.exec(cd);
+  if (star) name = decodeURIComponent(star[1]);
+  else if (plain) name = plain[1];
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Download the raw <sid>.jsonl transcript of a session's conversation.
+export async function downloadConversationJsonl(sessionId: string): Promise<void> {
+  const token = localStorage.getItem("token") || "";
+  const resp = await fetch(apiPath(`/api/sessions/${sessionId}/conversation/download`), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  await triggerBlobDownload(resp, "conversation.jsonl");
+}
+
+// Download a zip bundling the transcript + its sibling <sid>/ dir + the project
+// memory/ dir (absent roots are skipped server-side).
+export async function downloadConversationBundle(sessionId: string): Promise<void> {
+  const token = localStorage.getItem("token") || "";
+  const resp = await fetch(apiPath(`/api/sessions/${sessionId}/conversation/bundle`), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  await triggerBlobDownload(resp, "conversation-bundle.zip");
 }
 
 /**

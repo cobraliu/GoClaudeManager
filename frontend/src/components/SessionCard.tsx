@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { SessionMeta, ScheduledTask } from "../api/sessionApi";
-import { createTask, cancelTask, updateTaskCommand, renameSession } from "../api/sessionApi";
+import { createTask, cancelTask, updateTaskCommand, renameSession, updateSessionIdentity } from "../api/sessionApi";
 import { usePageVisible } from "../hooks/usePageVisible";
 import scheduleIcon from "../assets/schedule.svg";
 
@@ -60,6 +60,8 @@ interface Props {
   session: SessionMeta;
   isActive?: boolean;
   showOwner?: boolean;
+  // Admin-only: show an inline editor for the session↔agent/resume id mapping.
+  adminIdentity?: boolean;
   // When set, the card shows a prominent attention badge. Provided by the
   // SessionsPage poll loop from the per-session tui_* status fields.
   attentionKind?: AttentionKind | null;
@@ -478,6 +480,7 @@ export function SessionCard({
   session: s,
   isActive,
   showOwner,
+  adminIdentity,
   attentionKind,
   onAttach,
   onViewChat,
@@ -516,6 +519,41 @@ export function SessionCard({
     } catch {
       /* ignore */
     }
+  };
+
+  // Admin identity editor (resume_session_id / agent_session_id). Local state so
+  // the 5s admin poll refreshing `s` doesn't clobber an in-progress edit.
+  const [idOpen, setIdOpen] = useState(false);
+  const [idResume, setIdResume] = useState("");
+  const [idAgent, setIdAgent] = useState("");
+  const [idSaving, setIdSaving] = useState(false);
+  const [idMsg, setIdMsg] = useState("");
+  const toggleIdEditor = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!idOpen) {
+      setIdResume(s.resume_session_id || "");
+      setIdAgent(s.agent_session_id || "");
+      setIdMsg("");
+    }
+    setIdOpen((v) => !v);
+  };
+  const saveIdentity = async () => {
+    setIdSaving(true);
+    setIdMsg("");
+    try {
+      await updateSessionIdentity(s.id, { resume_session_id: idResume.trim(), agent_session_id: idAgent.trim() });
+      setIdMsg("saved ✓");
+      onRename?.();
+    } catch (e) {
+      setIdMsg(String(e));
+    } finally {
+      setIdSaving(false);
+    }
+  };
+  const idInputStyle: React.CSSProperties = {
+    fontSize: 11, fontFamily: "monospace", background: "var(--bg-surface)",
+    border: "1px solid var(--border)", borderRadius: 3, color: "var(--text-body)",
+    padding: "2px 5px", outline: "none", width: "100%", boxSizing: "border-box",
   };
 
   return (
@@ -638,6 +676,30 @@ export function SessionCard({
         <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 2 }}>
           <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{s.agent_session_id.slice(0, 8)}</span>
           {s.claude_title && <span style={{ marginLeft: 6, color: "var(--text-muted)" }}>{s.claude_title}</span>}
+        </div>
+      )}
+
+      {/* admin: edit session↔agent/resume id mapping */}
+      {adminIdentity && (
+        <div style={{ marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={toggleIdEditor}
+            style={{ fontSize: 10, background: "var(--btn-icon-bg)", color: "var(--text-secondary)", padding: "1px 7px", borderRadius: 3 }}
+          >🔑 IDs {idOpen ? "▲" : "▼"}</button>
+          {idOpen && (
+            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3, padding: 7, background: "var(--bg-base)", border: "1px solid var(--border-subtle)", borderRadius: 4 }}>
+              <label style={{ fontSize: 10, color: "var(--text-faint)" }}>resume_session_id</label>
+              <input value={idResume} onChange={(e) => setIdResume(e.target.value)} placeholder="(empty = clear)" spellCheck={false} style={idInputStyle} />
+              <label style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 2 }}>agent_session_id</label>
+              <input value={idAgent} onChange={(e) => setIdAgent(e.target.value)} placeholder="(empty = clear)" spellCheck={false} style={idInputStyle} />
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                <button onClick={saveIdentity} disabled={idSaving} style={{ fontSize: 11, background: "var(--accent-blue)", color: "#fff", padding: "2px 12px", borderRadius: 3, opacity: idSaving ? 0.5 : 1 }}>
+                  {idSaving ? "Saving…" : "Save"}
+                </button>
+                {idMsg && <span style={{ fontSize: 10, color: idMsg.includes("✓") ? "var(--accent-green)" : "var(--accent-red)" }}>{idMsg}</span>}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ func sessionsRouter(d Deps) http.Handler {
 
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) { listSessions(d, w, r) })
 		r.With(d.Auth.RequireAdmin).Get("/all", func(w http.ResponseWriter, r *http.Request) { listAllSessions(d, w, r) })
+		r.With(d.Auth.RequireAdmin).Patch("/{id}/identity", func(w http.ResponseWriter, r *http.Request) { adminUpdateIdentity(d, w, r) })
 		r.Get("/status", func(w http.ResponseWriter, r *http.Request) { listSessionsStatus(d, w, r) })
 
 		r.Get("/{id}", func(w http.ResponseWriter, r *http.Request) { getSession(d, w, r) })
@@ -83,6 +85,61 @@ func resolveOwned(d Deps, w http.ResponseWriter, r *http.Request) *model.Session
 		return nil
 	}
 	return s
+}
+
+// adminUpdateIdentity (admin-only) overrides a session's transcript-resolution
+// keys: resume_session_id and/or agent_session_id. Only fields present in the
+// body are written; an empty string clears the field (NULL). These ids drive
+// chat-history resolution (resolveChatSID), so this is a manual override for
+// when the stored id has gone stale. No uniqueness is enforced (mirrors the
+// rest of the codebase), but every change is logged by the store.
+func adminUpdateIdentity(d Deps, w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	s, err := d.Store.GetSession(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if s == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	var body struct {
+		ResumeSessionID *string `json:"resume_session_id"`
+		AgentSessionID  *string `json:"agent_session_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Trim; an empty (or whitespace-only) value means "clear to NULL".
+	norm := func(p *string) *string {
+		if p == nil {
+			return nil
+		}
+		if v := strings.TrimSpace(*p); v != "" {
+			return &v
+		}
+		return nil
+	}
+	if body.ResumeSessionID != nil {
+		if err := d.Store.SetResumeSessionID(id, norm(body.ResumeSessionID)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if body.AgentSessionID != nil {
+		if err := d.Store.SetAgentSessionID(id, norm(body.AgentSessionID)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	updated, err := d.Store.GetSession(id)
+	if err != nil || updated == nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func listSessions(d Deps, w http.ResponseWriter, r *http.Request) {

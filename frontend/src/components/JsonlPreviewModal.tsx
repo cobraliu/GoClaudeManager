@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { getConversationJsonl, type JsonlPageResponse } from "../api/sessionApi";
+import { getConversationJsonl, downloadConversationJsonl, downloadConversationBundle, type JsonlPageResponse } from "../api/sessionApi";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function copyText(text: string) {
@@ -212,6 +212,16 @@ export function JsonlPreviewModal({ sessionId, sessionTitle, onClose, inline = f
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [jumpInput, setJumpInput] = useState("");
+  const [downloading, setDownloading] = useState<"" | "jsonl" | "bundle">("");
+
+  const runDownload = (kind: "jsonl" | "bundle") => {
+    if (downloading) return;
+    setDownloading(kind);
+    const fn = kind === "jsonl" ? downloadConversationJsonl : downloadConversationBundle;
+    fn(sessionId)
+      .catch((e) => setError(String(e)))
+      .finally(() => setDownloading(""));
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -296,6 +306,18 @@ export function JsonlPreviewModal({ sessionId, sessionTitle, onClose, inline = f
               )}
             </div>
           )}
+          <button
+            onClick={() => runDownload("jsonl")}
+            disabled={!!downloading}
+            title="Download the raw .jsonl transcript"
+            style={{ background: "var(--btn-icon-bg)", color: "var(--text-secondary)", fontSize: 11, padding: "4px 8px", opacity: downloading ? 0.5 : 1 }}
+          >{downloading === "jsonl" ? "…" : "⤓ jsonl"}</button>
+          <button
+            onClick={() => runDownload("bundle")}
+            disabled={!!downloading}
+            title="Download transcript + subagents/tool-results + memory as a zip"
+            style={{ background: "var(--btn-icon-bg)", color: "var(--text-secondary)", fontSize: 11, padding: "4px 8px", opacity: downloading ? 0.5 : 1 }}
+          >{downloading === "bundle" ? "…" : "⤓ bundle"}</button>
           <button onClick={onClose} style={{ background: "var(--btn-icon-bg)", color: "var(--text-secondary)", fontSize: 12, padding: "4px 10px" }}>✕</button>
         </div>
         {/* Body */}

@@ -373,7 +373,7 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
             />
             <div style={{ columns: "minmax(260px, 1fr)", columnGap: 10 }}>
               {pageItems.map((s) => (
-                <SessionCard key={s.id} session={s} showOwner />
+                <SessionCard key={s.id} session={s} showOwner adminIdentity onRename={() => refreshSessions(searchRef2.current)} />
               ))}
             </div>
             {sessions.length === 0 && (
