@@ -146,29 +146,38 @@ func TestParseCmdline(t *testing.T) {
 
 func TestTop(t *testing.T) {
 	procs := []ProcInfo{
-		{PID: 1, CPUPercent: 10, RSSBytes: 500},
-		{PID: 2, CPUPercent: 90, RSSBytes: 100},
-		{PID: 3, CPUPercent: 50, RSSBytes: 900},
+		{PID: 1, CPUPercent: 10, RSSBytes: 500, NetRxBytesPerSec: 5, NetTxBytesPerSec: 5},
+		{PID: 2, CPUPercent: 90, RSSBytes: 100, NetRxBytesPerSec: 0, NetTxBytesPerSec: 0},
+		{PID: 3, CPUPercent: 50, RSSBytes: 900, NetRxBytesPerSec: 100, NetTxBytesPerSec: 200},
 	}
 	// by CPU desc
-	byCPU := Top(procs, false, 10)
+	byCPU := Top(procs, "cpu", 10)
 	if byCPU[0].PID != 2 || byCPU[1].PID != 3 || byCPU[2].PID != 1 {
 		t.Errorf("by-cpu order = %d,%d,%d, want 2,3,1", byCPU[0].PID, byCPU[1].PID, byCPU[2].PID)
 	}
 	// by mem (RSS) desc
-	byMem := Top(procs, true, 10)
+	byMem := Top(procs, "mem", 10)
 	if byMem[0].PID != 3 || byMem[1].PID != 1 || byMem[2].PID != 2 {
 		t.Errorf("by-mem order = %d,%d,%d, want 3,1,2", byMem[0].PID, byMem[1].PID, byMem[2].PID)
 	}
+	// by net (in+out) desc: 3 (300) > 1 (10) > 2 (0)
+	byNet := Top(procs, "net", 10)
+	if byNet[0].PID != 3 || byNet[1].PID != 1 || byNet[2].PID != 2 {
+		t.Errorf("by-net order = %d,%d,%d, want 3,1,2", byNet[0].PID, byNet[1].PID, byNet[2].PID)
+	}
+	// unknown/empty sort defaults to CPU
+	if got := Top(procs, "", 10); got[0].PID != 2 {
+		t.Errorf("empty sort should default to cpu, got first PID %d", got[0].PID)
+	}
 	// limit truncation
-	if got := Top(procs, false, 2); len(got) != 2 {
+	if got := Top(procs, "cpu", 2); len(got) != 2 {
 		t.Errorf("limit=2 → %d rows, want 2", len(got))
 	}
 	// limit clamping
-	if got := Top(procs, false, 0); len(got) != 1 {
+	if got := Top(procs, "cpu", 0); len(got) != 1 {
 		t.Errorf("limit=0 clamps to 1 → %d rows, want 1", len(got))
 	}
-	if got := Top(procs, false, 9999); len(got) != 3 {
+	if got := Top(procs, "cpu", 9999); len(got) != 3 {
 		t.Errorf("limit>len → %d rows, want 3 (all)", len(got))
 	}
 	// input not mutated

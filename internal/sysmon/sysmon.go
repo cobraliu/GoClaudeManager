@@ -14,6 +14,7 @@ package sysmon
 import (
 	"context"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
@@ -34,6 +35,11 @@ type ProcInfo struct {
 	CPUPercent float64 `json:"cpu_percent"`
 	MemPercent float64 `json:"mem_percent"`
 	RSSBytes   uint64  `json:"rss_bytes"`
+	// Network throughput attributed to this process (TCP only, best-effort —
+	// see netmon.go). Zero when ss is unavailable or the process has no
+	// readable sockets.
+	NetRxBytesPerSec float64 `json:"net_rx_bps"` // inbound / download
+	NetTxBytesPerSec float64 `json:"net_tx_bps"` // outbound / upload
 }
 
 // Overall is the machine-wide summary. CPUPercent here is whole-machine 0..100
@@ -53,6 +59,7 @@ type Overall struct {
 // (mem/load are valid but CPU% needs a second sample to have a delta).
 type Sample struct {
 	Overall   Overall    `json:"overall"`
+	Net       NetTotals  `json:"net"`
 	Processes []ProcInfo `json:"processes"`
 	Timestamp time.Time  `json:"timestamp"`
 	Ready     bool       `json:"ready"`
@@ -106,16 +113,28 @@ type Sampler struct {
 	lastMem   memSnap
 	lastLoad  loadSnap
 
+	// Network prev-state. prevNetTime stamps the previous successful net read so
+	// byte deltas convert to bytes/sec over the real elapsed gap.
+	prevNetRx, prevNetTx uint64
+	prevNetTime          time.Time
+	haveNetPrev          bool
+	prevProcNet          map[int]procNetBytes
+	lastNet              NetTotals
+	ssPath               string // resolved `ss` path; "" disables per-proc net
+
 	numCPU int
 	period time.Duration
 }
 
 // NewSampler builds a Sampler with sane defaults (2s cadence).
 func NewSampler() *Sampler {
+	ssPath, _ := exec.LookPath("ss") // "" → per-process net disabled, totals still work
 	return &Sampler{
-		prevProcs: map[int]procTime{},
-		numCPU:    runtime.NumCPU(),
-		period:    2 * time.Second,
+		prevProcs:   map[int]procTime{},
+		prevProcNet: map[int]procNetBytes{},
+		ssPath:      ssPath,
+		numCPU:      runtime.NumCPU(),
+		period:      2 * time.Second,
 	}
 }
 
@@ -124,7 +143,7 @@ func NewSampler() *Sampler {
 func (s *Sampler) Run(ctx context.Context) {
 	for {
 		start := time.Now()
-		s.refresh()
+		s.refresh(ctx)
 		wait := s.period - time.Since(start)
 		if wait < 500*time.Millisecond {
 			wait = 500 * time.Millisecond
@@ -168,7 +187,7 @@ func (s *Sampler) publish(sample Sample) {
 // refresh reads /proc once and publishes a new Sample, computing CPU% deltas
 // against the previous read. It builds a fresh Processes slice every tick and
 // never mutates a published one, so concurrent Latest() readers are safe.
-func (s *Sampler) refresh() {
+func (s *Sampler) refresh(ctx context.Context) {
 	// Lazy: when nobody has polled recently, skip the /proc walk entirely. On
 	// the transition into idle, drop the carried baseline and publish one
 	// not-ready snapshot so a later reopen warms up cleanly instead of flashing
@@ -177,6 +196,9 @@ func (s *Sampler) refresh() {
 		if s.havePrev {
 			s.havePrev = false
 			s.prevProcs = nil
+			s.haveNetPrev = false
+			s.prevProcNet = map[int]procNetBytes{}
+			s.lastNet = NetTotals{}
 			s.publish(Sample{Overall: s.lastKnownBase(), Processes: []ProcInfo{}, Timestamp: time.Now(), Ready: false})
 		}
 		return
@@ -197,13 +219,15 @@ func (s *Sampler) refresh() {
 	}
 
 	curProcs := readAllProcs()
+	now := time.Now()
+	netTotals, procNet := s.sampleNet(ctx, now)
 
 	// First good tick: store the baseline, no delta to report yet.
 	if !s.havePrev {
 		s.prevCPU = curCPU
 		s.prevProcs = curProcs
 		s.havePrev = true
-		s.publish(Sample{Overall: base, Processes: []ProcInfo{}, Timestamp: time.Now(), Ready: false})
+		s.publish(Sample{Overall: base, Net: netTotals, Processes: []ProcInfo{}, Timestamp: now, Ready: false})
 		return
 	}
 
@@ -220,23 +244,73 @@ func (s *Sampler) refresh() {
 				cpu = procCPUPercent(cur.utimeStime-prev.utimeStime, dTotal, s.numCPU)
 			}
 		}
+		nr := procNet[pid] // zero value when this pid has no attributed sockets
 		procs = append(procs, ProcInfo{
-			PID:        pid,
-			Comm:       cur.comm,
-			Cmdline:    cur.cmdline,
-			CPUPercent: cpu,
-			MemPercent: pct(cur.rssBytes, base.MemTotal),
-			RSSBytes:   cur.rssBytes,
+			PID:              pid,
+			Comm:             cur.comm,
+			Cmdline:          cur.cmdline,
+			CPUPercent:       cpu,
+			MemPercent:       pct(cur.rssBytes, base.MemTotal),
+			RSSBytes:         cur.rssBytes,
+			NetRxBytesPerSec: nr.rx,
+			NetTxBytesPerSec: nr.tx,
 		})
 	}
 	// Store the full set sorted by CPU (a sensible default order). The HTTP
 	// handler re-sorts by the requested key and truncates to the requested N,
 	// so the published slice keeps every process for either ranking.
-	sortProcs(procs, false)
+	sortProcs(procs, sortCPU)
 
 	s.prevCPU = curCPU
 	s.prevProcs = curProcs
-	s.publish(Sample{Overall: base, Processes: procs, Timestamp: time.Now(), Ready: true})
+	s.publish(Sample{Overall: base, Net: netTotals, Processes: procs, Timestamp: now, Ready: true})
+}
+
+// netRate is a per-process {in,out} bytes/sec pair (internal, not serialized).
+type netRate struct{ rx, tx float64 }
+
+// sampleNet reads /proc/net/dev and (when ss is available) per-socket TCP byte
+// counters, returning the machine totals rate and a per-pid {rx,tx} bytes/sec
+// map. It advances the carried net baseline; on the first call (no baseline)
+// the rates are zero. now is the tick time used for the wall-clock delta.
+func (s *Sampler) sampleNet(ctx context.Context, now time.Time) (NetTotals, map[int]netRate) {
+	rates := map[int]netRate{}
+	dt := 0.0
+	if s.haveNetPrev {
+		dt = now.Sub(s.prevNetTime).Seconds()
+	}
+
+	totals := s.lastNet
+	if rx, tx, ok := readNetDevTotals(); ok {
+		if s.haveNetPrev {
+			totals = NetTotals{
+				RxBytesPerSec: ratePerSec(rx, s.prevNetRx, dt),
+				TxBytesPerSec: ratePerSec(tx, s.prevNetTx, dt),
+			}
+		} else {
+			totals = NetTotals{}
+		}
+		s.prevNetRx, s.prevNetTx = rx, tx
+		s.lastNet = totals
+	}
+
+	if cur, ok := readProcNetBytes(ctx, s.ssPath); ok {
+		if s.haveNetPrev && dt > 0 {
+			for pid, c := range cur {
+				if p, ok := s.prevProcNet[pid]; ok {
+					rates[pid] = netRate{
+						rx: ratePerSec(c.rx, p.rx, dt),
+						tx: ratePerSec(c.tx, p.tx, dt),
+					}
+				}
+			}
+		}
+		s.prevProcNet = cur
+	}
+
+	s.prevNetTime = now
+	s.haveNetPrev = true
+	return totals, rates
 }
 
 // readMemLoad reads mem + load for this tick, carrying forward the last good
@@ -284,28 +358,59 @@ func (s *Sampler) lastKnownBase() Overall {
 // even if a caller asks for an absurd limit.
 const MaxTopN = 200
 
-// sortProcs orders in place: by memory (RSS) when byMem, else by CPU; ties
-// broken by the other metric so the order is stable and meaningful.
-func sortProcs(procs []ProcInfo, byMem bool) {
+// sortKey selects the ranking metric for the process list.
+type sortKey int
+
+const (
+	sortCPU sortKey = iota // by CPU%
+	sortMem                // by RSS
+	sortNet                // by total network throughput (in+out)
+)
+
+// parseSortKey maps the HTTP `sort` query value to a sortKey (default CPU).
+func parseSortKey(s string) sortKey {
+	switch s {
+	case "mem":
+		return sortMem
+	case "net":
+		return sortNet
+	default:
+		return sortCPU
+	}
+}
+
+func netTotal(p ProcInfo) float64 { return p.NetRxBytesPerSec + p.NetTxBytesPerSec }
+
+// sortProcs orders in place by the chosen key, breaking ties with CPU so the
+// order is stable and meaningful.
+func sortProcs(procs []ProcInfo, key sortKey) {
 	sort.Slice(procs, func(i, j int) bool {
 		a, b := procs[i], procs[j]
-		if byMem {
+		switch key {
+		case sortMem:
 			if a.RSSBytes != b.RSSBytes {
 				return a.RSSBytes > b.RSSBytes
 			}
 			return a.CPUPercent > b.CPUPercent
-		}
-		if a.CPUPercent != b.CPUPercent {
+		case sortNet:
+			na, nb := netTotal(a), netTotal(b)
+			if na != nb {
+				return na > nb
+			}
 			return a.CPUPercent > b.CPUPercent
+		default:
+			if a.CPUPercent != b.CPUPercent {
+				return a.CPUPercent > b.CPUPercent
+			}
+			return a.RSSBytes > b.RSSBytes
 		}
-		return a.RSSBytes > b.RSSBytes
 	})
 }
 
 // Top returns a freshly-sorted, truncated copy of procs (never mutating the
-// input — important because the caller passes the sampler's shared slice). The
-// limit is clamped to [1, MaxTopN].
-func Top(procs []ProcInfo, byMem bool, limit int) []ProcInfo {
+// input — important because the caller passes the sampler's shared slice). sort
+// is the HTTP query value ("cpu"|"mem"|"net"); limit is clamped to [1, MaxTopN].
+func Top(procs []ProcInfo, sortBy string, limit int) []ProcInfo {
 	if limit < 1 {
 		limit = 1
 	}
@@ -314,7 +419,7 @@ func Top(procs []ProcInfo, byMem bool, limit int) []ProcInfo {
 	}
 	out := make([]ProcInfo, len(procs))
 	copy(out, procs)
-	sortProcs(out, byMem)
+	sortProcs(out, parseSortKey(sortBy))
 	if len(out) > limit {
 		out = out[:limit]
 	}

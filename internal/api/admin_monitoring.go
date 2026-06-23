@@ -33,20 +33,22 @@ func adminMonitoringStats(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	s := d.Sysmon.Latest()
 
-	// View parameters: sort=cpu|mem (default cpu), limit (default 20, clamped to
-	// [1, MaxTopN] inside sysmon.Top). The sampler holds every process; ranking
-	// and truncation happen here so the client can switch without a re-sample.
-	byMem := r.URL.Query().Get("sort") == "mem"
+	// View parameters: sort=cpu|mem|net (default cpu), limit (default 20, clamped
+	// to [1, MaxTopN] inside sysmon.Top). The sampler holds every process;
+	// ranking and truncation happen here so the client can switch without a
+	// re-sample.
+	sortBy := r.URL.Query().Get("sort")
 	limit := 20
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			limit = n
 		}
 	}
-	procs := sysmon.Top(s.Processes, byMem, limit)
+	procs := sysmon.Top(s.Processes, sortBy, limit)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"overall":   s.Overall,
+		"net":       s.Net,
 		"processes": procs,
 		"timestamp": s.Timestamp,
 		"ready":     s.Ready,

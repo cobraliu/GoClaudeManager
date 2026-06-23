@@ -2350,6 +2350,13 @@ export interface MonitorOverall {
   num_cpu: number;
 }
 
+// Machine-wide network throughput, split into inbound (rx) / outbound (tx)
+// bytes/sec. From /proc/net/dev (loopback excluded) — exact totals.
+export interface MonitorNet {
+  rx_bps: number; // inbound / download
+  tx_bps: number; // outbound / upload
+}
+
 export interface MonitorProc {
   pid: number;
   comm: string;
@@ -2357,16 +2364,20 @@ export interface MonitorProc {
   cpu_percent: number;   // per-core scale: 100 == one full core
   mem_percent: number;
   rss_bytes: number;
+  // Per-process network (TCP only, best-effort via `ss`; 0 when unattributed).
+  net_rx_bps: number;    // inbound / download
+  net_tx_bps: number;    // outbound / upload
 }
 
 export interface MonitorStats {
   overall: MonitorOverall;
+  net: MonitorNet;
   processes: MonitorProc[];
   timestamp: string;
   ready: boolean;
 }
 
-export function getMonitorStats(sort: "cpu" | "mem" = "cpu", limit = 20): Promise<MonitorStats> {
+export function getMonitorStats(sort: "cpu" | "mem" | "net" = "cpu", limit = 20): Promise<MonitorStats> {
   const params = new URLSearchParams({ sort, limit: String(limit) });
   return request<MonitorStats>(`/api/admin/monitoring/stats?${params}`);
 }

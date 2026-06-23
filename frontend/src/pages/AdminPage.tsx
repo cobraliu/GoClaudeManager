@@ -49,7 +49,7 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
   const [pwValue, setPwValue] = useState("");
   const [tab, setTab] = useState<"sessions" | "users" | "config" | "terminal" | "monitoring">("config");
   const [monitor, setMonitor] = useState<MonitorStats | null>(null);
-  const [monSort, setMonSort] = useState<"cpu" | "mem">("cpu");
+  const [monSort, setMonSort] = useState<"cpu" | "mem" | "net">("cpu");
   const [monLimit, setMonLimit] = useState(20);
   const adminTerminalApi = useAdminTerminalApi();
   const [loginModalOpen, setLoginModalOpen] = useState(false);
@@ -1005,6 +1005,15 @@ function fmtBytes(n: number): string {
   return n + " B";
 }
 
+// formatBps renders a byte/sec rate compactly (GB/s … B/s). Decimal units (1000)
+// match how network speeds are conventionally quoted.
+function formatBps(n: number): string {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + " GB/s";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + " MB/s";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + " KB/s";
+  return Math.round(n) + " B/s";
+}
+
 // barColor: green under 60%, amber 60–85%, red above.
 function barColor(pct: number): string {
   if (pct >= 85) return "var(--accent-red)";
@@ -1031,9 +1040,9 @@ const MON_LIMITS = [10, 20, 50, 100, 200];
 
 function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
   stats: MonitorStats | null;
-  sort: "cpu" | "mem";
+  sort: "cpu" | "mem" | "net";
   limit: number;
-  onSortChange: (s: "cpu" | "mem") => void;
+  onSortChange: (s: "cpu" | "mem" | "net") => void;
   onLimitChange: (n: number) => void;
 }) {
   // Tapped/clicked process whose full command line is expanded inline. Works as
@@ -1047,7 +1056,7 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
   const o = stats?.overall;
   const thCol: React.CSSProperties = { textAlign: "right", padding: "6px 10px", color: "var(--text-muted)", fontWeight: 500, whiteSpace: "nowrap" };
   const tdNum: React.CSSProperties = { textAlign: "right", padding: "5px 10px", fontFamily: "monospace", color: "var(--text-body)", whiteSpace: "nowrap" };
-  const sortBtn = (key: "cpu" | "mem"): React.CSSProperties => ({
+  const sortBtn = (key: "cpu" | "mem" | "net"): React.CSSProperties => ({
     background: sort === key ? "var(--accent-blue)" : "var(--bg-hover)",
     color: sort === key ? "#fff" : "var(--text-body)",
     fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", cursor: "pointer",
@@ -1060,6 +1069,8 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
           <StatCard label="CPU (whole machine)" value={o.cpu_percent.toFixed(1) + "%"} sub={`${o.num_cpu} cores`} pct={o.cpu_percent} />
           <StatCard label="Memory" value={o.mem_percent.toFixed(1) + "%"} sub={`${fmtBytes(o.mem_used)} / ${fmtBytes(o.mem_total)}`} pct={o.mem_percent} />
           <StatCard label="Load average" value={o.load1.toFixed(2)} sub={`5m ${o.load5.toFixed(2)} · 15m ${o.load15.toFixed(2)}`} />
+          <StatCard label="Net in (download)" value={formatBps(stats?.net?.rx_bps ?? 0)} sub="all interfaces, excl. lo" />
+          <StatCard label="Net out (upload)" value={formatBps(stats?.net?.tx_bps ?? 0)} sub="all interfaces, excl. lo" />
         </div>
       )}
 
@@ -1069,6 +1080,7 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
         <div style={{ display: "flex", gap: 6 }}>
           <button style={sortBtn("cpu")} onClick={() => onSortChange("cpu")}>CPU</button>
           <button style={sortBtn("mem")} onClick={() => onSortChange("mem")}>Memory</button>
+          <button style={sortBtn("net")} onClick={() => onSortChange("net")}>Network</button>
         </div>
         <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>Show</span>
         <select
@@ -1087,8 +1099,9 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
       ) : (
         <>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>
-            Top {stats.processes.length} processes by {sort === "mem" ? "memory" : "CPU"}.
-            CPU% is per-core (100% = 1 core; this host has {o?.num_cpu}). Tap a row for the full command.
+            Top {stats.processes.length} processes by {sort === "mem" ? "memory" : sort === "net" ? "network" : "CPU"}.
+            CPU% is per-core (100% = 1 core; this host has {o?.num_cpu}).
+            Net is per-process TCP throughput (best-effort via ss; may not sum to the totals above). Tap a row for the full command.
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
@@ -1098,6 +1111,8 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
                 <th style={{ ...thCol, width: 90 }}>CPU%</th>
                 <th style={{ ...thCol, width: 80 }}>Mem%</th>
                 <th style={{ ...thCol, width: 100 }}>RSS</th>
+                <th style={{ ...thCol, width: 100 }}>Net in</th>
+                <th style={{ ...thCol, width: 100 }}>Net out</th>
               </tr>
             </thead>
             <tbody>
@@ -1123,10 +1138,12 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
                       <td style={{ ...tdNum, color: p.cpu_percent >= 50 ? "var(--accent-amber)" : "var(--text-body)" }}>{p.cpu_percent.toFixed(1)}</td>
                       <td style={tdNum}>{p.mem_percent.toFixed(1)}</td>
                       <td style={tdNum}>{fmtBytes(p.rss_bytes)}</td>
+                      <td style={{ ...tdNum, color: p.net_rx_bps > 0 ? "var(--text-body)" : "var(--text-faint)" }}>{p.net_rx_bps > 0 ? formatBps(p.net_rx_bps) : "·"}</td>
+                      <td style={{ ...tdNum, color: p.net_tx_bps > 0 ? "var(--text-body)" : "var(--text-faint)" }}>{p.net_tx_bps > 0 ? formatBps(p.net_tx_bps) : "·"}</td>
                     </tr>
                     {isOpen && (
                       <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                        <td colSpan={5} style={{ padding: "2px 10px 8px 34px", background: "var(--bg-base)" }}>
+                        <td colSpan={7} style={{ padding: "2px 10px 8px 34px", background: "var(--bg-base)" }}>
                           <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>Full command</div>
                           <code style={{ fontSize: 12, color: "var(--text-body)", wordBreak: "break-all", whiteSpace: "pre-wrap", display: "block" }}>{p.cmdline || "(unavailable)"}</code>
                         </td>
