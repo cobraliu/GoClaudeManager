@@ -5635,7 +5635,6 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
             isTerminated
               ? { icon: "▶", title: "Resume", onClick: async () => { try { await resumeSession(session.id); setSession((s) => ({ ...s, status: "running" })); } catch (e) { alert(String(e)); } }, color: "var(--accent-green)", bg: "transparent" }
               : { icon: "⏹", title: "Terminate", onClick: async () => { try { await terminateSession(session.id); onBack(); } catch {} }, color: "var(--accent-red)", bg: "transparent" },
-            { icon: "⚙", title: "Claude Capabilities", onClick: () => setShowCaps(true), color: iconMuted, bg: "transparent" },
             { icon: "🔗", title: "分享对话", onClick: () => setShowShare(true), color: iconMuted, bg: "transparent" },
             {
               icon: <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: -0.3 }}>HTML</span>,
