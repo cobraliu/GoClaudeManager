@@ -1069,8 +1069,8 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
           <StatCard label="CPU (whole machine)" value={o.cpu_percent.toFixed(1) + "%"} sub={`${o.num_cpu} cores`} pct={o.cpu_percent} />
           <StatCard label="Memory" value={o.mem_percent.toFixed(1) + "%"} sub={`${fmtBytes(o.mem_used)} / ${fmtBytes(o.mem_total)}`} pct={o.mem_percent} />
           <StatCard label="Load average" value={o.load1.toFixed(2)} sub={`5m ${o.load5.toFixed(2)} · 15m ${o.load15.toFixed(2)}`} />
-          <StatCard label="Net in (download)" value={formatBps(stats?.net?.rx_bps ?? 0)} sub="all interfaces, excl. lo" />
-          <StatCard label="Net out (upload)" value={formatBps(stats?.net?.tx_bps ?? 0)} sub="all interfaces, excl. lo" />
+          <StatCard label="Net in (download)" value={formatBps(stats?.net?.rx_bps ?? 0)} sub="real total, physical NICs" />
+          <StatCard label="Net out (upload)" value={formatBps(stats?.net?.tx_bps ?? 0)} sub="real total, physical NICs" />
         </div>
       )}
 
@@ -1154,6 +1154,53 @@ function MonitorTab({ stats, sort, limit, onSortChange, onLimitChange }: {
               })}
             </tbody>
           </table>
+
+          {/* Unattributed remainder of the real NIC total: total − Σ host
+              processes. Covers other-user sockets (non-root), UDP/QUIC,
+              short-lived conns, and container off-box egress. */}
+          {stats.other && (
+            <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+              <span style={{ color: "var(--text-secondary)" }}>Other (not mapped to a host process):</span>{" "}
+              in <code style={{ color: "var(--text-body)" }}>{formatBps(stats.other.rx_bps)}</code> ·
+              out <code style={{ color: "var(--text-body)" }}>{formatBps(stats.other.tx_bps)}</code>
+              <span style={{ marginLeft: 6, color: "var(--text-faint)" }}>
+                — real total = processes + other (other-user / UDP·QUIC / short-lived / container egress)
+              </span>
+            </div>
+          )}
+
+          {/* Per-container bandwidth via `docker stats` (whole-container; host
+              process attribution can't see container sockets — separate netns). */}
+          {stats.containers && stats.containers.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-bright)", marginBottom: 4 }}>
+                Containers ({stats.containers.length})
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>
+                Per-container network from <code>docker stats</code>, sorted by throughput (~every 6s).
+                Separate measurement plane — counts all container traffic (incl. intra-host), so it
+                need not sum to the NIC total above.
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                    <th style={{ ...thCol, textAlign: "left" }}>Container</th>
+                    <th style={{ ...thCol, width: 120 }}>Net in</th>
+                    <th style={{ ...thCol, width: 120 }}>Net out</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.containers.map((c) => (
+                    <tr key={c.name} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                      <td style={{ padding: "5px 10px", fontFamily: "monospace", color: "var(--text-bright)", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.name}>{c.name}</td>
+                      <td style={{ ...tdNum, color: c.net_rx_bps > 0 ? "var(--text-body)" : "var(--text-faint)" }}>{c.net_rx_bps > 0 ? formatBps(c.net_rx_bps) : "·"}</td>
+                      <td style={{ ...tdNum, color: c.net_tx_bps > 0 ? "var(--text-body)" : "var(--text-faint)" }}>{c.net_tx_bps > 0 ? formatBps(c.net_tx_bps) : "·"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>

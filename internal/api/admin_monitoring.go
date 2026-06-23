@@ -46,11 +46,34 @@ func adminMonitoringStats(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	procs := sysmon.Top(s.Processes, sortBy, limit)
 
+	// "Other" = real NIC total minus the host-process traffic we could attribute.
+	// It covers everything the per-process pass can't map to a visible host
+	// process: other users' sockets (non-root), UDP/QUIC, short-lived connections,
+	// kernel, and any container's off-box egress. Summed over the FULL process
+	// slice (not the truncated Top view), clamped at 0 to absorb sampling skew.
+	//
+	// Containers are deliberately NOT subtracted: `docker stats` measures all of a
+	// container's traffic (incl. intra-host / cached) on a different plane than the
+	// physical NIC, so a container's number isn't a clean subset of the NIC total —
+	// subtracting it could wrongly zero out real unattributed traffic. The
+	// container table is a separate breakdown, reconciled only loosely.
+	var accRx, accTx float64
+	for _, p := range s.Processes {
+		accRx += p.NetRxBytesPerSec
+		accTx += p.NetTxBytesPerSec
+	}
+	other := map[string]float64{
+		"rx_bps": max(0, s.Net.RxBytesPerSec-accRx),
+		"tx_bps": max(0, s.Net.TxBytesPerSec-accTx),
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"overall":   s.Overall,
-		"net":       s.Net,
-		"processes": procs,
-		"timestamp": s.Timestamp,
-		"ready":     s.Ready,
+		"overall":    s.Overall,
+		"net":        s.Net,
+		"processes":  procs,
+		"containers": s.Containers,
+		"other":      other,
+		"timestamp":  s.Timestamp,
+		"ready":      s.Ready,
 	})
 }

@@ -23,8 +23,11 @@ import (
 	"time"
 )
 
-// NetTotals is the machine-wide network throughput, split into inbound (rx) and
-// outbound (tx) bytes/sec. Sourced from /proc/net/dev (loopback excluded).
+// NetTotals is the real off-box network throughput, split into inbound (rx) and
+// outbound (tx) bytes/sec. Sourced from /proc/net/dev but summed over PHYSICAL
+// interfaces only (those with a backing device under /sys/class/net) — bridges,
+// veth pairs, docker0 and lo are excluded so bridged container traffic isn't
+// double/triple-counted across the NIC + bridge + veth it traverses.
 type NetTotals struct {
 	RxBytesPerSec float64 `json:"rx_bps"` // inbound / download
 	TxBytesPerSec float64 `json:"tx_bps"` // outbound / upload
@@ -37,26 +40,35 @@ type procNetBytes struct{ rx, tx uint64 }
 // sampler loop.
 const ssTimeout = 4 * time.Second
 
-// readNetDevTotals sums rx/tx bytes across all non-loopback interfaces.
+// readNetDevTotals sums rx/tx bytes across the physical interfaces only.
 func readNetDevTotals() (rx, tx uint64, ok bool) {
 	b, err := os.ReadFile("/proc/net/dev")
 	if err != nil {
 		return 0, 0, false
 	}
-	return parseNetDev(string(b))
+	return parseNetDev(string(b), isPhysicalIface)
+}
+
+// isPhysicalIface reports whether name is a real NIC rather than a virtual
+// interface (bridge, veth, docker0, lo, tun, …). A physical interface has a
+// backing device symlink at /sys/class/net/<name>/device; virtual ones don't.
+func isPhysicalIface(name string) bool {
+	_, err := os.Lstat("/sys/class/net/" + name + "/device")
+	return err == nil
 }
 
 // parseNetDev parses /proc/net/dev. Each data line is "iface: rxbytes rxpkts
-// ... txbytes txpkts ..." with 8 receive then 8 transmit columns. The loopback
-// interface is excluded so the totals reflect real off-box traffic.
-func parseNetDev(s string) (rx, tx uint64, ok bool) {
+// ... txbytes txpkts ..." with 8 receive then 8 transmit columns. Only
+// interfaces for which keep(name) returns true are summed, so the totals reflect
+// real off-box traffic without double-counting it across virtual interfaces.
+func parseNetDev(s string, keep func(string) bool) (rx, tx uint64, ok bool) {
 	for _, line := range strings.Split(s, "\n") {
 		i := strings.IndexByte(line, ':')
 		if i < 0 {
 			continue // the two header rows have no "iface:" colon
 		}
 		name := strings.TrimSpace(line[:i])
-		if name == "" || name == "lo" {
+		if name == "" || !keep(name) {
 			continue
 		}
 		f := strings.Fields(line[i+1:])
@@ -98,6 +110,12 @@ func readProcNetBytes(ctx context.Context, ssPath string) (map[int]procNetBytes,
 // (carrying the users:(...) process field) followed by a whitespace-indented
 // info line (carrying bytes_received: / bytes_acked:). Bytes are attributed to
 // the first pid listed on the preceding header.
+//
+// Loopback sockets (peer 127.0.0.0/8 or ::1) are skipped: that traffic never
+// crosses a physical NIC, and on hosts with a local proxy (here curl→127.0.0.1:
+// proxy) it would otherwise dwarf the real off-box total and make the per-process
+// breakdown un-reconcilable with it. The proxy's own upstream (external peer) is
+// still counted, which is where the NIC bytes actually go.
 func parseSS(s string) map[int]procNetBytes {
 	res := map[int]procNetBytes{}
 	curPID := 0
@@ -118,14 +136,35 @@ func parseSS(s string) map[int]procNetBytes {
 			have = false
 			continue
 		}
-		// Socket header line. Attribute to the first pid= it lists, if any.
+		// Socket header line. Attribute to the first pid= it lists, unless the
+		// peer is loopback (intra-host, not real network bandwidth).
 		have = false
-		if pid, ok := firstPID(line); ok {
+		if pid, ok := firstPID(line); ok && !peerIsLoopback(line) {
 			curPID = pid
 			have = true
 		}
 	}
 	return res
+}
+
+// peerIsLoopback reports whether the remote end of an `ss` header line is a
+// loopback address. The peer "addr:port" is the last whitespace field before the
+// users:(…) column (or the last field when there is none).
+func peerIsLoopback(line string) bool {
+	seg := line
+	if u := strings.Index(line, "users:("); u >= 0 {
+		seg = line[:u]
+	}
+	f := strings.Fields(seg)
+	if len(f) < 2 {
+		return false
+	}
+	peer := f[len(f)-1]
+	host := peer
+	if c := strings.LastIndexByte(peer, ':'); c >= 0 { // strip :port
+		host = peer[:c]
+	}
+	return strings.HasPrefix(host, "127.") || host == "::1" || host == "[::1]"
 }
 
 // firstPID extracts the first pid=<n> from a users:(...) field.

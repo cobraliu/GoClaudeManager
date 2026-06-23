@@ -2369,10 +2369,21 @@ export interface MonitorProc {
   net_tx_bps: number;    // outbound / upload
 }
 
+// One running container's network throughput (in/out bytes/sec) from
+// `docker stats`. Host per-process attribution can't see container sockets
+// (separate netns), so containers are reported whole.
+export interface MonitorContainer {
+  name: string;
+  net_rx_bps: number; // inbound / download
+  net_tx_bps: number; // outbound / upload
+}
+
 export interface MonitorStats {
   overall: MonitorOverall;
-  net: MonitorNet;
+  net: MonitorNet;             // real off-box total (physical NICs only)
   processes: MonitorProc[];
+  containers: MonitorContainer[];
+  other: { rx_bps: number; tx_bps: number }; // total − Σ(processes+containers)
   timestamp: string;
   ready: boolean;
 }

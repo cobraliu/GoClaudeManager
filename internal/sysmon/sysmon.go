@@ -58,11 +58,21 @@ type Overall struct {
 // Sample is one published snapshot. Ready is false on the very first tick
 // (mem/load are valid but CPU% needs a second sample to have a delta).
 type Sample struct {
-	Overall   Overall    `json:"overall"`
-	Net       NetTotals  `json:"net"`
-	Processes []ProcInfo `json:"processes"`
-	Timestamp time.Time  `json:"timestamp"`
-	Ready     bool       `json:"ready"`
+	Overall    Overall         `json:"overall"`
+	Net        NetTotals       `json:"net"`
+	Processes  []ProcInfo      `json:"processes"`
+	Containers []ContainerInfo `json:"containers"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Ready      bool            `json:"ready"`
+}
+
+// ContainerInfo is one running container's network throughput (in/out bytes/sec)
+// from `docker stats`. Host per-process attribution can't see container sockets
+// (separate netns), so containers are reported at whole-container granularity.
+type ContainerInfo struct {
+	Name             string  `json:"name"`
+	NetRxBytesPerSec float64 `json:"net_rx_bps"` // inbound / download
+	NetTxBytesPerSec float64 `json:"net_tx_bps"` // outbound / upload
 }
 
 // ── Internal prev-state (never serialized) ─────────────────────────────────
@@ -122,19 +132,36 @@ type Sampler struct {
 	lastNet              NetTotals
 	ssPath               string // resolved `ss` path; "" disables per-proc net
 
+	// Container net prev-state. `docker stats --no-stream` blocks ~1–1.5s, so it
+	// is sampled only every containerEvery-th tick; lastContainers caches the
+	// computed rates for the in-between ticks. tick counts non-idle refreshes.
+	dockerPath        string // resolved `docker` path; "" disables container net
+	prevContainerNet  map[string]containerBytes
+	prevContainerTime time.Time
+	haveContainerPrev bool
+	lastContainers    []ContainerInfo
+	tick              int
+
 	numCPU int
 	period time.Duration
 }
 
+// containerEvery throttles docker-stats sampling to one in N refreshes (~6s at a
+// 2s period) to keep the heavier call off every tick.
+const containerEvery = 3
+
 // NewSampler builds a Sampler with sane defaults (2s cadence).
 func NewSampler() *Sampler {
-	ssPath, _ := exec.LookPath("ss") // "" → per-process net disabled, totals still work
+	ssPath, _ := exec.LookPath("ss")         // "" → per-process net disabled, totals still work
+	dockerPath, _ := exec.LookPath("docker") // "" → container net disabled, rest unaffected
 	return &Sampler{
-		prevProcs:   map[int]procTime{},
-		prevProcNet: map[int]procNetBytes{},
-		ssPath:      ssPath,
-		numCPU:      runtime.NumCPU(),
-		period:      2 * time.Second,
+		prevProcs:        map[int]procTime{},
+		prevProcNet:      map[int]procNetBytes{},
+		prevContainerNet: map[string]containerBytes{},
+		ssPath:           ssPath,
+		dockerPath:       dockerPath,
+		numCPU:           runtime.NumCPU(),
+		period:           2 * time.Second,
 	}
 }
 
@@ -199,6 +226,10 @@ func (s *Sampler) refresh(ctx context.Context) {
 			s.haveNetPrev = false
 			s.prevProcNet = map[int]procNetBytes{}
 			s.lastNet = NetTotals{}
+			s.haveContainerPrev = false
+			s.prevContainerNet = map[string]containerBytes{}
+			s.lastContainers = nil
+			s.tick = 0
 			s.publish(Sample{Overall: s.lastKnownBase(), Processes: []ProcInfo{}, Timestamp: time.Now(), Ready: false})
 		}
 		return
@@ -221,13 +252,14 @@ func (s *Sampler) refresh(ctx context.Context) {
 	curProcs := readAllProcs()
 	now := time.Now()
 	netTotals, procNet := s.sampleNet(ctx, now)
+	containers := s.sampleContainers(ctx, now)
 
 	// First good tick: store the baseline, no delta to report yet.
 	if !s.havePrev {
 		s.prevCPU = curCPU
 		s.prevProcs = curProcs
 		s.havePrev = true
-		s.publish(Sample{Overall: base, Net: netTotals, Processes: []ProcInfo{}, Timestamp: now, Ready: false})
+		s.publish(Sample{Overall: base, Net: netTotals, Containers: containers, Timestamp: now, Ready: false})
 		return
 	}
 
@@ -263,7 +295,7 @@ func (s *Sampler) refresh(ctx context.Context) {
 
 	s.prevCPU = curCPU
 	s.prevProcs = curProcs
-	s.publish(Sample{Overall: base, Net: netTotals, Processes: procs, Timestamp: now, Ready: true})
+	s.publish(Sample{Overall: base, Net: netTotals, Processes: procs, Containers: containers, Timestamp: now, Ready: true})
 }
 
 // netRate is a per-process {in,out} bytes/sec pair (internal, not serialized).
@@ -311,6 +343,54 @@ func (s *Sampler) sampleNet(ctx context.Context, now time.Time) (NetTotals, map[
 	s.prevNetTime = now
 	s.haveNetPrev = true
 	return totals, rates
+}
+
+// sampleContainers returns per-container net rates. To bound the cost of the
+// (~1–1.5s) `docker stats` call it actually samples only every containerEvery-th
+// non-idle tick, returning the cached lastContainers in between. Rates use the
+// gap since the previous *container* sample (not the 2s tick) as dt. Containers
+// are returned sorted by total throughput (in+out) descending.
+func (s *Sampler) sampleContainers(ctx context.Context, now time.Time) []ContainerInfo {
+	if s.dockerPath == "" {
+		return nil
+	}
+	s.tick++
+	if s.haveContainerPrev && s.tick%containerEvery != 0 {
+		return s.lastContainers // reuse cached rates on the in-between ticks
+	}
+
+	cur, ok := readContainerNet(ctx, s.dockerPath)
+	if !ok {
+		return s.lastContainers // docker hiccup: keep the last good values
+	}
+
+	var out []ContainerInfo
+	if s.haveContainerPrev {
+		dt := now.Sub(s.prevContainerTime).Seconds()
+		for name, c := range cur {
+			p, seen := s.prevContainerNet[name]
+			rx, tx := 0.0, 0.0
+			if seen {
+				rx = ratePerSec(c.rx, p.rx, dt)
+				tx = ratePerSec(c.tx, p.tx, dt)
+			}
+			out = append(out, ContainerInfo{Name: name, NetRxBytesPerSec: rx, NetTxBytesPerSec: tx})
+		}
+		sort.Slice(out, func(i, j int) bool {
+			a := out[i].NetRxBytesPerSec + out[i].NetTxBytesPerSec
+			b := out[j].NetRxBytesPerSec + out[j].NetTxBytesPerSec
+			if a != b {
+				return a > b
+			}
+			return out[i].Name < out[j].Name
+		})
+	}
+
+	s.prevContainerNet = cur
+	s.prevContainerTime = now
+	s.haveContainerPrev = true
+	s.lastContainers = out
+	return out
 }
 
 // readMemLoad reads mem + load for this tick, carrying forward the last good
