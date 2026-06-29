@@ -36,6 +36,13 @@
   --accent-green: #57ab5a;
   --accent-red:   #e5534b;
   --accent-amber: #c69026;
+  /* status-indicator colors — deliberately vivid (glowing dots/banners that
+     must pop from a peripheral glance) and shared across themes. Tokenized so
+     the pulse animations below don't hardcode raw hex. */
+  --status-streaming:     #22c55e; /* live streaming output (green) */
+  --status-attention:     #ef4444; /* new output / needs-attention (red) */
+  --status-attention-dim: #dc2626; /* attention banner pulse low point */
+  --status-stop:          #f97316; /* stoppable / thinking (orange) */
   /* inline code color — theme-aware so contrast holds in both modes */
   --code-inline-color: #e879f9;
   /* diff */
@@ -110,6 +117,39 @@ button:disabled {
   cursor: not-allowed;
 }
 
+/* ── Keyboard focus ring ─────────────────────────────────────────────────────
+   :focus-visible only fires for keyboard (not mouse) focus, so pointer users
+   see no ring while keyboard users get a clear one. Form controls across the
+   app clear their outline inline (outline:none); an inline outline beats a CSS
+   one, so for those we also paint a box-shadow ring (not set inline) to
+   guarantee a visible focus indicator. */
+:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[contenteditable="true"]:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-blue);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────────
+   Respect prefers-reduced-motion: collapse the app's many infinite pulse
+   animations (streaming/new-output/attention/thinking dots and banners) and
+   transitions to a single static frame. Keyframes all rest at their visible
+   100% state, so indicators stay legible — they just stop moving. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Completely suppress right-click context menu in terminal */
 .xterm-helper-textarea {
   pointer-events: none !important;
@@ -137,13 +177,13 @@ button:disabled {
 }
 
 @keyframes streaming-pulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px #22c55e; }
-  50%       { opacity: 0.3; box-shadow: 0 0 2px 0px #22c55e; }
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px var(--status-streaming); }
+  50%       { opacity: 0.3; box-shadow: 0 0 2px 0px var(--status-streaming); }
 }
 
 @keyframes new-output-pulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px #ef4444; }
-  50%       { opacity: 0.3; box-shadow: 0 0 2px 0px #ef4444; }
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px var(--status-attention); }
+  50%       { opacity: 0.3; box-shadow: 0 0 2px 0px var(--status-attention); }
 }
 
 .streaming-dot {
@@ -151,7 +191,7 @@ button:disabled {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--status-streaming);
   flex-shrink: 0;
   animation: streaming-pulse 0.8s ease-in-out infinite;
 }
@@ -161,7 +201,7 @@ button:disabled {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #ef4444;
+  background: var(--status-attention);
   flex-shrink: 0;
   animation: new-output-pulse 1.2s ease-in-out infinite;
 }
@@ -256,8 +296,8 @@ button:disabled {
 
 /* Thinking block animations */
 @keyframes stop-pulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 5px 2px #f97316; }
-  50%       { opacity: 0.6; box-shadow: 0 0 2px 0px #f97316; }
+  0%, 100% { opacity: 1; box-shadow: 0 0 5px 2px var(--status-stop); }
+  50%       { opacity: 0.6; box-shadow: 0 0 2px 0px var(--status-stop); }
 }
 .stop-pulse { animation: stop-pulse 1s ease-in-out infinite; }
 
@@ -277,8 +317,8 @@ button:disabled {
    approval, tool approval). Animates background + shadow together so the
    banner reads from a peripheral glance, not just up close. */
 @keyframes attention-pulse {
-  0%, 100% { background: #dc2626; box-shadow: 0 0 8px 1px rgba(220,38,38,0.55); }
-  50%      { background: #ef4444; box-shadow: 0 0 14px 4px rgba(239,68,68,0.85); }
+  0%, 100% { background: var(--status-attention-dim); box-shadow: 0 0 8px 1px rgba(220,38,38,0.55); }
+  50%      { background: var(--status-attention); box-shadow: 0 0 14px 4px rgba(239,68,68,0.85); }
 }
 .attention-banner { animation: attention-pulse 1.2s ease-in-out infinite; }
 

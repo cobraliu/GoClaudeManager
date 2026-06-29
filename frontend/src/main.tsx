@@ -1,11 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
 import { LoginPage } from "./pages/LoginPage";
-import { SessionsPage } from "./pages/SessionsPage";
-import { AdminPage } from "./pages/AdminPage";
-import { MobilePage } from "./pages/MobilePage";
-import { JsonlChatToolPage } from "./pages/JsonlChatToolPage";
-import { ShareViewer } from "./components/ShareViewer";
 import type { ShareType } from "./api/sessionApi";
 import { startMermaidObserver } from "./lib/mermaid";
 import { apiPath } from "./lib/baseUrl";
@@ -13,9 +8,36 @@ import "./index.css";
 import "highlight.js/styles/github-dark.css";
 import "katex/dist/katex.min.css";
 
+// Route-level code splitting: each of these top-level "pages" is large
+// (MobilePage/SessionsPage are 6k/3k LOC) and exactly one renders at a time, so
+// lazy-loading keeps them out of the initial bundle. A desktop user never
+// downloads MobilePage, an end-user never downloads AdminPage, etc. LoginPage
+// stays eager — it's the first paint and small, so a Suspense flash there would
+// hurt more than it helps. Named exports → unwrap to a default for React.lazy.
+const SessionsPage = lazy(() => import("./pages/SessionsPage").then(m => ({ default: m.SessionsPage })));
+const AdminPage = lazy(() => import("./pages/AdminPage").then(m => ({ default: m.AdminPage })));
+const MobilePage = lazy(() => import("./pages/MobilePage").then(m => ({ default: m.MobilePage })));
+const JsonlChatToolPage = lazy(() => import("./pages/JsonlChatToolPage").then(m => ({ default: m.JsonlChatToolPage })));
+const ShareViewer = lazy(() => import("./components/ShareViewer").then(m => ({ default: m.ShareViewer })));
+
 startMermaidObserver();
 
 export type Theme = "dark" | "light";
+
+// Minimal full-screen fallback shown while a lazily-loaded page chunk downloads.
+// Uses theme tokens so it blends with whichever theme is active on :root.
+function PageFallback() {
+  return (
+    <div
+      style={{
+        height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+        background: "var(--bg-page)", color: "var(--text-faint)", fontSize: 13,
+      }}
+    >
+      <span className="thinking-pulse">Loading…</span>
+    </div>
+  );
+}
 
 function useIsMobile() {
   const [mobile, setMobile] = useState(() => window.innerWidth < 768);
@@ -165,8 +187,10 @@ const _shareMatch = window.location.pathname.match(/\/share\/(full|limited|chat)
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {_shareMatch
-      ? <ShareViewer shareType={_shareMatch[1] as ShareType} hash={_shareMatch[2]} />
-      : <App />}
+    <Suspense fallback={<PageFallback />}>
+      {_shareMatch
+        ? <ShareViewer shareType={_shareMatch[1] as ShareType} hash={_shareMatch[2]} />
+        : <App />}
+    </Suspense>
   </React.StrictMode>
 );
