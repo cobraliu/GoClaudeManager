@@ -79,6 +79,79 @@ func TestParseAUQFromScreen_MultiSelect(t *testing.T) {
 	}
 }
 
+// Newer Claude Code (≥2.x) renders multi-select rows as numbered with a ✔ glyph
+// ("❯ 1. [ ] label" / "2. [✔] label") and drops the trailing period on the
+// sentinels. The parser must still recognize multiSelect and emit clean labels.
+func TestParseAUQFromScreen_MultiSelectNumberedCheckmark(t *testing.T) {
+	screen := strings.Join([]string{
+		"  ☐ 方向",
+		"  你目前最关注哪个方向？",
+		"  ❯ 1. [ ] Web 开发",
+		"       前端/后端/全栈应用",
+		"    2. [✔] AI / 机器学习",
+		"       模型、Agent、LLM 应用",
+		"    3. [✔] DevOps / 基础设施",
+		"    4. [ ] 测试 / 质量保障",
+		"    5. [ ] Type something",
+		"       Next",
+		"    6. Chat about this",
+		"  Space to select, Enter to confirm",
+	}, "\n")
+
+	got, ok := ParseAUQFromScreen(screen)
+	if !ok {
+		t.Fatalf("expected AUQ to parse, got ok=false")
+	}
+	if got["multiSelect"] != true {
+		t.Errorf("multiSelect = %v, want true", got["multiSelect"])
+	}
+	if got["allowFreeform"] != true {
+		t.Errorf("allowFreeform = %v, want true (Type something present)", got["allowFreeform"])
+	}
+	opts, _ := got["options"].([]map[string]any)
+	if len(opts) != 4 {
+		t.Fatalf("expected 4 options (Type something/Chat about this excluded), got %d: %+v", len(opts), opts)
+	}
+	if opts[0]["label"] != "Web 开发" || opts[0]["checked"] != false {
+		t.Errorf("opt0 = %+v, want 'Web 开发' unchecked (no [ ]/number garbage)", opts[0])
+	}
+	if opts[1]["label"] != "AI / 机器学习" || opts[1]["checked"] != true {
+		t.Errorf("opt1 = %+v, want 'AI / 机器学习' checked", opts[1])
+	}
+	if opts[2]["checked"] != true {
+		t.Errorf("opt2 = %+v, want checked (✔)", opts[2])
+	}
+}
+
+func TestIsAUQSubmitConfirm(t *testing.T) {
+	yes := []string{
+		strings.Join([]string{
+			"Review your answers",
+			" ● 你最喜欢的编程语言是哪个？ → JavaScript / TypeScript",
+			"Ready to submit your answers?",
+			"❯ 1. Submit answers",
+			"  2. Cancel",
+		}, "\n"),
+		// Wording/case drift fallback: "Submit Answers" + "Cancel".
+		"Submit Answers\n❯ 1. Submit Answers\n  2. Cancel\n",
+	}
+	no := []string{
+		"",
+		"  ☐ Choose features\n  Which?\n  ❯ [x] Logging\n  [ ] Metrics\n",
+		"just some output with the word cancel in it",
+	}
+	for _, s := range yes {
+		if !IsAUQSubmitConfirm(s) {
+			t.Errorf("IsAUQSubmitConfirm = false, want true for:\n%s", s)
+		}
+	}
+	for _, s := range no {
+		if IsAUQSubmitConfirm(s) {
+			t.Errorf("IsAUQSubmitConfirm = true, want false for:\n%q", s)
+		}
+	}
+}
+
 func TestParseAUQFromScreen_NotAnAUQ(t *testing.T) {
 	screen := "just some normal terminal output\nwith no question widget at all\n"
 	if got, ok := ParseAUQFromScreen(screen); ok {

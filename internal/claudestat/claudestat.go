@@ -101,8 +101,12 @@ func homeDir() (string, bool) {
 // ── AUQ option regexes (compiled once) ─────────────────────────────────────
 
 var (
-	// multiOptRE matches a multi-select option line: "❯ [ ] label" / "[x] label".
-	multiOptRE = regexp.MustCompile(`^[❯>]?\s*\[[ x]\]\s+(.+)$`)
+	// multiOptRE matches a multi-select option line. Two layouts across Claude
+	// Code versions: the old "❯ [ ] label" / "[x] label", and the newer numbered
+	// "❯ 1. [ ] label" / "2. [✔] label" (a number now precedes the checkbox, and
+	// the checked glyph is ✔/✓ rather than x). The optional "N." and the wider
+	// checkbox char class cover both.
+	multiOptRE = regexp.MustCompile(`^[❯>]?\s*(?:\d+\.\s*)?\[[ xX✔✓]\]\s+(.+)$`)
 	// singleOptRE matches a single-select numbered option line: "❯ 1. label".
 	singleOptRE = regexp.MustCompile(`^[❯>]?\s*(\d+)\.\s+(.+)$`)
 	// numberedPrefixRE matches a leading "N." prefix for description lookahead.
@@ -164,15 +168,18 @@ func ParseAUQFromScreen(screen string) (map[string]any, bool) {
 			if m := multiOptRE.FindStringSubmatch(stripped); m != nil {
 				multiSelect = true
 				label := strings.TrimSpace(m[1])
-				checked := strings.Contains(stripped, "[x]")
-				low := strings.ToLower(label)
-				if low != "type something." && low != "chat about this" {
+				checked := strings.Contains(stripped, "[x]") || strings.Contains(stripped, "[X]") ||
+					strings.Contains(stripped, "[✔]") || strings.Contains(stripped, "[✓]")
+				// Newer Claude Code renders the sentinels without the trailing
+				// period ("Type something" / "Chat about this"); tolerate both.
+				low := strings.TrimRight(strings.ToLower(label), ". ")
+				if low != "type something" && low != "chat about this" {
 					options = append(options, map[string]any{
 						"label":       label,
 						"description": "",
 						"checked":     checked,
 					})
-				} else if low == "type something." {
+				} else if low == "type something" {
 					allowFreeform = true
 				}
 				continue
@@ -181,8 +188,8 @@ func ParseAUQFromScreen(screen string) (map[string]any, bool) {
 			// Single-select: numbered options.
 			if m := singleOptRE.FindStringSubmatch(stripped); m != nil {
 				label := strings.TrimSpace(m[2])
-				low := strings.ToLower(label)
-				if low == "type something." {
+				low := strings.TrimRight(strings.ToLower(label), ". ")
+				if low == "type something" {
 					allowFreeform = true
 				} else if low != "chat about this" {
 					desc := ""
@@ -365,6 +372,25 @@ func IsModelSwitchDialog(screen string) bool {
 		}
 	}
 	return false
+}
+
+// IsAUQSubmitConfirm reports whether the captured screen shows the final AUQ
+// "Ready to submit your answers?" confirmation menu (Submit answers / Cancel).
+// Occasionally a web/mobile submit's confirming Enter doesn't land and the
+// session is stranded here; the status loop uses this to detect that and press
+// Enter once more. Matching is case-insensitive (the wording's capitalization has
+// drifted across Claude Code versions, e.g. "Submit Answers" vs "Submit answers").
+func IsAUQSubmitConfirm(screen string) bool {
+	if screen == "" {
+		return false
+	}
+	low := strings.ToLower(stripANSI(screen))
+	if strings.Contains(low, "ready to submit your answers") {
+		return true
+	}
+	// Fallback for wording drift: the menu's "submit answers" action plus a
+	// "cancel" option distinguishes it from an in-progress question.
+	return strings.Contains(low, "submit answers") && strings.Contains(low, "cancel")
 }
 
 // ── PID waiting state ──────────────────────────────────────────────────────

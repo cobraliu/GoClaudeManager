@@ -56,6 +56,12 @@ type Manager struct {
 	// on whatever the TUI renders next.
 	autoMu          sync.Mutex
 	lastAutoConfirm map[string]time.Time
+
+	// lastAUQSubmit records when the web/mobile API last drove an AUQ submit via
+	// send-keys for a session. The status loop uses it to detect the occasional
+	// "stuck on the Submit answers confirm" case (a missed confirming Enter) and
+	// press Enter once more. Guarded by autoMu.
+	lastAUQSubmit map[string]time.Time
 }
 
 // sessionLister is the subset of the store this package needs.
@@ -66,7 +72,8 @@ type sessionLister interface {
 // NewManager builds a status Manager.
 func NewManager(store sessionLister, tx *tmux.Client, jc *jsonl.Cache) *Manager {
 	return &Manager{store: store, tmux: tx, jsonl: jc, snap: map[string]Computed{},
-		lastAutoConfirm: map[string]time.Time{}}
+		lastAutoConfirm: map[string]time.Time{},
+		lastAUQSubmit:   map[string]time.Time{}}
 }
 
 // Get returns the cached status for a session, if present.
@@ -231,6 +238,15 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		return screenCache
 	}
 
+	// Occasionally a web/mobile AUQ submit's confirming Enter doesn't land and the
+	// session is stranded on the "Ready to submit your answers?" menu. If we just
+	// submitted for this session and that menu is still up, press Enter once more.
+	// Cheap on the common path: it only captures the screen when a submit was
+	// recently recorded for this session.
+	if eligible {
+		m.maybeRetryAUQSubmit(s, captureScreen)
+	}
+
 	if pidWaiting {
 		var hookAuq, hookApprove map[string]any
 		if agentID != "" {
@@ -393,6 +409,64 @@ func (m *Manager) autoConfirmModelDialog(s *model.Session) {
 	}
 	slog.Info("status: auto-confirmed model-switch dialog",
 		"session", s.ID, "tmux", s.TmuxSessionName)
+}
+
+// auqRetryMinAge / auqRetryMaxAge bound when the stuck-confirm auto-retry may
+// fire after an AUQ submit: not before the submit handler's own confirming Enter
+// has had time to land and the TUI to render (min), and not so long after that
+// it's no longer plausibly our missed-Enter case (max).
+const (
+	auqRetryMinAge = 2 * time.Second
+	auqRetryMaxAge = 12 * time.Second
+)
+
+// NoteAUQSubmitted records that an AUQ answer was just submitted via send-keys
+// for the session, arming the stuck-confirm auto-retry. Called by the AUQ submit
+// API handlers immediately after they finish sending keystrokes.
+func (m *Manager) NoteAUQSubmitted(sessionID string) {
+	m.autoMu.Lock()
+	m.lastAUQSubmit[sessionID] = time.Now()
+	m.autoMu.Unlock()
+}
+
+// maybeRetryAUQSubmit handles the occasional case where a web/mobile AUQ submit's
+// confirming Enter doesn't take and the session is left on the "Ready to submit
+// your answers?" menu. If we recently submitted for this session AND that confirm
+// menu is still on screen, press Enter once more, then disarm so it fires at most
+// once per submit.
+func (m *Manager) maybeRetryAUQSubmit(s *model.Session, captureScreen func() string) {
+	m.autoMu.Lock()
+	submittedAt, armed := m.lastAUQSubmit[s.ID]
+	m.autoMu.Unlock()
+	if !armed {
+		return
+	}
+	age := time.Since(submittedAt)
+	if age < auqRetryMinAge || age > auqRetryMaxAge {
+		// Outside the window. Reap a stale stamp so the map can't grow unbounded
+		// for sessions that submitted but never got stuck.
+		if age > auqRetryMaxAge {
+			m.autoMu.Lock()
+			delete(m.lastAUQSubmit, s.ID)
+			m.autoMu.Unlock()
+		}
+		return
+	}
+	screen := captureScreen()
+	if screen == "" || !claudestat.IsAUQSubmitConfirm(screen) {
+		return
+	}
+	// Disarm before sending so a concurrent inline Compute can't double-press.
+	m.autoMu.Lock()
+	delete(m.lastAUQSubmit, s.ID)
+	m.autoMu.Unlock()
+	if _, err := m.tmux.Run("send-keys", "-t", s.TmuxSessionName+":0.0", "Enter"); err != nil {
+		slog.Warn("status: AUQ submit auto-retry failed",
+			"session", s.ID, "tmux", s.TmuxSessionName, "err", err)
+		return
+	}
+	slog.Info("status: auto-retried stuck AUQ submit confirm",
+		"session", s.ID, "tmux", s.TmuxSessionName, "ageMs", age.Milliseconds())
 }
 
 // computeSDK builds Computed for an sdk-transport session from the pump state.

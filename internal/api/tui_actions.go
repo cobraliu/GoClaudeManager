@@ -139,6 +139,13 @@ func answerAUQ(d Deps, w http.ResponseWriter, r *http.Request) {
 		d.Tmux.Run("send-keys", "-t", pane, "Enter")
 	}
 
+	// Arm the status loop's stuck-confirm auto-retry: if the confirming Enter
+	// above doesn't land and the session is left on "Ready to submit your
+	// answers?", the loop presses Enter once more.
+	if d.Snapshot != nil {
+		d.Snapshot.NoteAUQSubmitted(s.ID)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -270,17 +277,27 @@ func auqSubmit(d Deps, w http.ResponseWriter, r *http.Request) {
 	if body.SingleShot {
 		// single_shot mode (pending AUQ: one question at a time).
 		// After answering, check what the TUI shows:
-		//   "Submit Answers" → last question of a multi-question AUQ → confirm.
+		//   submit-confirm menu → last question of a multi-question AUQ → confirm.
 		//   A new question (☐ header) → more questions follow → no Enter.
+		// IsAUQSubmitConfirm is case-insensitive: the confirm wording's
+		// capitalization drifted across Claude Code versions ("Submit Answers" →
+		// "Submit answers"), which a literal substring check silently missed —
+		// leaving the session stuck on the confirm menu.
 		time.Sleep(1000 * time.Millisecond)
 		screen, err := d.Tmux.Run("capture-pane", "-p", "-t", s.TmuxSessionName)
-		if err == nil && screen != "" && strings.Contains(screen, "Submit Answers") && !strings.Contains(screen, "☐") {
+		if err == nil && claudestat.IsAUQSubmitConfirm(screen) && !strings.Contains(screen, "☐") {
 			d.Tmux.Run("send-keys", "-t", pane, "Enter")
 		}
 	} else {
 		// Batch mode: final Enter confirms "Submit Answers" for multi-question AUQs.
 		time.Sleep(1200 * time.Millisecond)
 		d.Tmux.Run("send-keys", "-t", pane, "Enter")
+	}
+
+	// Arm the status loop's stuck-confirm auto-retry as a safety net for a missed
+	// confirming Enter (see answerAUQ).
+	if d.Snapshot != nil {
+		d.Snapshot.NoteAUQSubmitted(s.ID)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "via": "send-keys"})
