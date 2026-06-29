@@ -23,6 +23,7 @@ import {
 import { PromptHistoryPopover } from "./PromptHistoryPopover";
 import { copyTextDetect, selectElementContents } from "../lib/copyText";
 import { usePageVisible } from "../hooks/usePageVisible";
+import { IconClipboard, IconWrench, IconEdit, IconRefresh, IconWarning, IconFile, IconAttach } from "./icons";
 
 const POLL_MS = 1500;
 // Idle cadence: when the session is not streaming/compacting/waiting and no
@@ -1331,7 +1332,7 @@ function TodoListBlock({ block, result }: {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: "var(--conv-font-sm, 11px)", marginRight: 1 }}>📋</span>
+          <span style={{ fontSize: "var(--conv-font-sm, 11px)", marginRight: 1 }}><IconClipboard /></span>
           <span style={{ fontFamily: "monospace", fontSize: "var(--conv-font, 12.5px)", fontWeight: 700, color: "var(--text-bright)", flexShrink: 0 }}>
             {name}
           </span>
@@ -2959,7 +2960,7 @@ function TurnUsage({ model, usage }: { model?: string; usage?: RawUsage }) {
       {usage && (
         <span style={{ fontSize: 10, color: "var(--text-faint)", fontFamily: "monospace", whiteSpace: "nowrap" }}>
           <span title="input tokens">↑</span><span style={{ color: "var(--text-muted)" }}>{fmt(inp)}</span>
-          {cached > 0 && <span style={{ color: "var(--text-faint)" }} title="cache read">♻{fmt(cached)}</span>}
+          {cached > 0 && <span style={{ color: "var(--text-faint)" }} title="cache read"><IconRefresh style={{ verticalAlign: "-0.15em" }} />{fmt(cached)}</span>}
           {created > 0 && <span style={{ color: "var(--text-faint)" }} title="cache write">+{fmt(created)}</span>}
           <span title="output tokens">·↓</span><span style={{ color: "var(--text-muted)" }}>{fmt(out)}</span>
         </span>
@@ -3004,7 +3005,7 @@ function SubagentBadges({ meta, showStatus = false }: { meta?: SubAgentMeta; sho
         </span>
       )}
       {!!meta.durationSec && <span style={chip} title="duration">{formatDuration(meta.durationSec)}</span>}
-      {!!meta.toolUses && <span style={chip} title="tool calls">{meta.toolUses}🔧</span>}
+      {!!meta.toolUses && <span style={chip} title="tool calls">{meta.toolUses}<IconWrench style={{ verticalAlign: "-0.15em" }} /></span>}
     </>
   );
 }
@@ -3229,7 +3230,7 @@ function CodexToolCallBlock({ name, input, status, callId, pairedOutput }: {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: dotColor }} />
-          <span style={{ fontSize: 11 }}>🔧</span>
+          <span style={{ fontSize: 11 }}><IconWrench /></span>
           <span style={{ fontFamily: "monospace", fontSize: "var(--conv-font, 12.5px)", fontWeight: 700, color: "var(--text-bright)", flexShrink: 0 }}>
             {name}
           </span>
@@ -3483,7 +3484,7 @@ function CodexPatchApplyBlock({ stdout, stderr, success, changes, status }: {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0 }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: dotColor }} />
-          <span style={{ fontSize: 11 }}>📝</span>
+          <span style={{ fontSize: 11 }}><IconEdit /></span>
           <span style={{ fontFamily: "monospace", fontSize: "var(--conv-font, 12.5px)", fontWeight: 700, color: "var(--text-bright)", flexShrink: 0 }}>
             patch_apply
           </span>
@@ -3845,7 +3846,7 @@ const MessageEntry = React.memo(function MessageEntry({
             segments.push(
               <div key={i} style={{ padding: "2px 16px" }}>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 10px", borderRadius: 5, background: "#160c2a", border: "1px solid #4c1d95", color: "#c4b5fd" }}>
-                  <span>📋</span>
+                  <span><IconClipboard /></span>
                   <span>Awaiting plan approval…</span>
                 </div>
               </div>
@@ -5161,7 +5162,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
     attachmentInputRef.current?.click();
   }, []);
 
-  const handleAttachmentFiles = useCallback(async (files: FileList | null) => {
+  const handleAttachmentFiles = useCallback(async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
     setAttachmentUploadError(null);
     setIsUploadingAttachment(true);
@@ -5186,6 +5187,35 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
   const removePendingAttachment = useCallback((path: string) => {
     setPendingAttachments((prev) => prev.filter((p) => p.path !== path));
   }, []);
+
+  // Paste a screenshot (or any image) straight from the clipboard into the
+  // input — same flow as the 📎 picker. Most screenshot pastes land in
+  // clipboardData.files; some browsers only populate items, so fall back to
+  // that. Non-image pastes (plain text) fall through to the default behavior.
+  // Clipboard images often arrive unnamed ("") — give them a stable name so the
+  // attachment chip and server filename aren't blank.
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    let imgs: File[] = Array.from(cd.files).filter((f) => f.type.startsWith("image/"));
+    if (imgs.length === 0) {
+      for (const it of Array.from(cd.items)) {
+        if (it.kind === "file" && it.type.startsWith("image/")) {
+          const f = it.getAsFile();
+          if (f) imgs.push(f);
+        }
+      }
+    }
+    if (imgs.length === 0) return; // plain text / non-image — let the default paste run
+    e.preventDefault(); // don't also drop the image's text representation into the textarea
+    const stamp = Date.now();
+    imgs = imgs.map((f, i) =>
+      f.name
+        ? f
+        : new File([f], `pasted-${stamp}${imgs.length > 1 ? `-${i + 1}` : ""}.${f.type.split("/")[1] || "png"}`, { type: f.type })
+    );
+    void handleAttachmentFiles(imgs);
+  }, [handleAttachmentFiles]);
 
   // Transient top toast with its own auto-dismiss (independent of the
   // lost-transition effect's timer).
@@ -5540,7 +5570,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
                   color: "var(--text-default)", fontSize: 13, lineHeight: 1.6,
                   whiteSpace: "pre-wrap", wordBreak: "break-word",
                 }}>
-                  <span style={{ marginRight: 6 }}>⚠️</span>{renderPromptWithImages(lm.text, sessionId)}
+                  <span style={{ marginRight: 6 }}><IconWarning style={{ verticalAlign: "-0.15em" }} /></span>{renderPromptWithImages(lm.text, sessionId)}
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, paddingRight: 2 }}>
                   <span style={{ fontSize: 10, color: "var(--accent-red, #c0392b)" }}>Send failed — likely eaten by auto-compact</span>
@@ -5808,7 +5838,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
                       display: "flex", alignItems: "center", justifyContent: "center",
                       fontSize: 13,
                     }}
-                  >📄</span>
+                  ><IconFile /></span>
                 )}
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {att.filename}
@@ -5842,6 +5872,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
               else { inputDrafts.delete(sessionId); clearDraft(sessionId); }
             }}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder={
               hasUnansweredAuq
                 ? "Answer the question above before sending — typing is allowed"
@@ -5911,7 +5942,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
                     onMouseEnter={(e) => { if (!uploadDisabled) e.currentTarget.style.background = "var(--bg-hover)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-base)"; }}
                     title={isUploadingAttachment ? "Uploading…" : "Attach file (any type, ≤50MB)"}
-                  >{isUploadingAttachment ? "…" : "📎"}</button>
+                  >{isUploadingAttachment ? "…" : <IconAttach />}</button>
                   <button
                     onClick={sendPrompt}
                     onPointerDown={(e) => e.preventDefault()}
