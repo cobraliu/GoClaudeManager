@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, createContext, useContext } from "react";
+import { TableVirtuoso, type TableVirtuosoHandle, type TableComponents } from "react-virtuoso";
 import hljs from "highlight.js/lib/common";
 import { marked } from "../lib/markdown";
 import {
@@ -24,6 +25,7 @@ import { detectFormat, convert, languageFor, type ConfigFormat } from "../lib/co
 import { useFsWatch } from "../lib/useFsWatch";
 import { usePageVisible } from "../hooks/usePageVisible";
 import downloadIcon from "../assets/download.svg";
+import { IconWarning, IconArchive } from "./icons";
 
 const MAX_TRANSFER_MB = 16;
 const MAX_TRANSFER_BYTES = MAX_TRANSFER_MB * 1024 * 1024;
@@ -704,8 +706,19 @@ function SplitDiffViewer({ data }: { data: FileData }) {
 
 const LINE_H = 20;
 
+type CodeRow = { type: "line"; ln: number } | { type: "gap" };
+
+// Stable TableVirtuoso component overrides — defined once at module scope so
+// Virtuoso doesn't remount the inner <table> on every CodeViewer render (which
+// would reset scroll position). Merges our table styling onto Virtuoso's own.
+const codeViewerComponents: TableComponents<CodeRow> = {
+  Table: (props) => (
+    <table {...props} style={{ ...props.style, borderCollapse: "collapse", minWidth: "100%" }} />
+  ),
+};
+
 function CodeViewer({ data, scrollToFirst, diffOnly, noDiff }: { data: FileData; scrollToFirst: boolean; diffOnly?: boolean; noDiff?: boolean }) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<TableVirtuosoHandle>(null);
   const addedSet = noDiff ? new Set<number>() : new Set(data.added_lines);
   const removedSet = noDiff ? new Set<number>() : new Set(data.removed_lines);
   const lines = data.content.split("\n");
@@ -736,77 +749,91 @@ function CodeViewer({ data, scrollToFirst, diffOnly, noDiff }: { data: FileData;
     for (let i = 0; i < lines.length; i++) rows.push({ type: "line", ln: i + 1 });
   }
 
+  // Row index to reveal on open: in whole-file view rows are 1:1 with lines, so
+  // the first changed line maps to index (line-1); the compacted diff view just
+  // starts at the top. Drives both the first-paint anchor and the imperative
+  // scroll once Virtuoso has mounted.
+  const scrollIndex = visibleSet
+    ? 0
+    : (() => {
+        const first = data.added_lines[0] ?? data.removed_lines[0];
+        return first ? first - 1 : -1;
+      })();
+
   useEffect(() => {
-    if (!scrollToFirst || !containerRef.current) return;
-    if (visibleSet) {
-      containerRef.current.scrollTop = 0;
+    if (!scrollToFirst) return;
+    if (scrollIndex <= 0) {
+      virtuosoRef.current?.scrollToIndex({ index: 0 });
       return;
     }
-    const first = data.added_lines[0] ?? data.removed_lines[0];
-    if (!first) return;
-    containerRef.current.scrollTop = Math.max(0, (first - 1) * LINE_H - 120);
-  }, [data.path, scrollToFirst, diffOnly]); // eslint-disable-line
+    virtuosoRef.current?.scrollToIndex({ index: scrollIndex, align: "start", offset: -120 });
+  }, [data.path, scrollToFirst, diffOnly, scrollIndex]); // eslint-disable-line
 
   return (
     <div
-      ref={containerRef}
       style={{
-        flex: 1, overflowY: "auto", overflowX: "auto", background: "var(--bg-base)",
+        flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: "var(--bg-base)",
         fontFamily: '"Cascadia Code","Fira Code",Menlo,Monaco,"Courier New",monospace',
         fontSize: 13, lineHeight: `${LINE_H}px`,
       }}
     >
       {data.truncated && (
-        <div style={{ padding: "4px 12px", background: "var(--bg-deep)", color: "var(--text-secondary)", fontSize: 11, borderBottom: "1px solid var(--border)" }}>
+        <div style={{ padding: "4px 12px", background: "var(--bg-deep)", color: "var(--text-secondary)", fontSize: 11, borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           {data.truncated_by === "bytes"
             ? `File truncated — showing first ${(data.displayed_lines ?? 0).toLocaleString()} lines (size cap)`
             : `File truncated — showing first ${(data.displayed_lines ?? 0).toLocaleString()} lines`}
         </div>
       )}
-      <table style={{ borderCollapse: "collapse", minWidth: "100%" }}>
-        <tbody>
-          {rows.map((row, idx) => {
-            if (row.type === "gap") {
-              return (
-                <tr key={`gap-${idx}`} style={{ height: LINE_H }}>
-                  <td colSpan={2} style={{
-                    textAlign: "center", color: "var(--text-faint)", fontSize: 11,
-                    userSelect: "none", background: "var(--bg-surface)",
-                  }}>···</td>
-                </tr>
-              );
-            }
-            const { ln } = row;
-            const line = lines[ln - 1] ?? "";
-            const isAdded = addedSet.has(ln);
-            const isRemoved = removedSet.has(ln);
-            let hl = "";
-            try {
-              hl = hljs.highlight(line || " ", { language: data.language, ignoreIllegals: true }).value;
-            } catch {
-              hl = (line || " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            }
+      {/* Virtualized: only the visible rows mount, so a huge file no longer
+          renders N <tr> nodes or runs N synchronous hljs.highlight calls.
+          Rows wrap (variable height), so we let Virtuoso measure them. */}
+      <TableVirtuoso
+        ref={virtuosoRef}
+        data={rows}
+        components={codeViewerComponents}
+        style={{ flex: 1, overflowX: "auto" }}
+        initialTopMostItemIndex={scrollIndex > 0 ? scrollIndex : 0}
+        itemContent={(idx, row) => {
+          if (row.type === "gap") {
             return (
-              <tr key={ln} style={{ background: isAdded ? "var(--diff-add-bg)" : isRemoved ? "var(--diff-del-bg)" : "transparent" }}>
-                <td style={{
-                  textAlign: "right", paddingRight: 12, paddingLeft: 12,
-                  color: isAdded ? "var(--accent-green)" : isRemoved ? "var(--accent-red)" : "var(--text-faint)",
-                  userSelect: "none", whiteSpace: "nowrap", verticalAlign: "top",
-                  minWidth: 40, fontSize: 11,
-                }}>
-                  {isAdded ? "+" : isRemoved ? "−" : ""}{ln}
-                </td>
-                <td style={{
-                  paddingRight: 24, whiteSpace: "pre-wrap", wordBreak: "break-all", verticalAlign: "top", paddingLeft: 8,
-                  borderLeft: isAdded ? "2px solid var(--diff-add-prefix)" : isRemoved ? "2px solid var(--diff-del-prefix)" : "2px solid transparent",
-                }}
-                  dangerouslySetInnerHTML={{ __html: hl }}
-                />
-              </tr>
+              <td colSpan={2} style={{
+                textAlign: "center", color: "var(--text-faint)", fontSize: 11,
+                userSelect: "none", background: "var(--bg-surface)", height: LINE_H,
+              }} key={`gap-${idx}`}>···</td>
             );
-          })}
-        </tbody>
-      </table>
+          }
+          const { ln } = row;
+          const line = lines[ln - 1] ?? "";
+          const isAdded = addedSet.has(ln);
+          const isRemoved = removedSet.has(ln);
+          const rowBg = isAdded ? "var(--diff-add-bg)" : isRemoved ? "var(--diff-del-bg)" : "transparent";
+          let hl = "";
+          try {
+            hl = hljs.highlight(line || " ", { language: data.language, ignoreIllegals: true }).value;
+          } catch {
+            hl = (line || " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          }
+          return (
+            <>
+              <td style={{
+                textAlign: "right", paddingRight: 12, paddingLeft: 12,
+                color: isAdded ? "var(--accent-green)" : isRemoved ? "var(--accent-red)" : "var(--text-faint)",
+                userSelect: "none", whiteSpace: "nowrap", verticalAlign: "top",
+                minWidth: 40, fontSize: 11, background: rowBg,
+              }}>
+                {isAdded ? "+" : isRemoved ? "−" : ""}{ln}
+              </td>
+              <td style={{
+                paddingRight: 24, whiteSpace: "pre-wrap", wordBreak: "break-all", verticalAlign: "top", paddingLeft: 8,
+                background: rowBg,
+                borderLeft: isAdded ? "2px solid var(--diff-add-prefix)" : isRemoved ? "2px solid var(--diff-del-prefix)" : "2px solid transparent",
+              }}
+                dangerouslySetInnerHTML={{ __html: hl }}
+              />
+            </>
+          );
+        }}
+      />
     </div>
   );
 }
@@ -1281,7 +1308,7 @@ function ChangedFilesWarningsBanner({
       color: "var(--text-secondary)",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ color: "var(--accent-amber)", fontSize: 11 }}>⚠</span>
+        <span style={{ color: "var(--accent-amber)", fontSize: 11 }}><IconWarning /></span>
         <span style={{ flex: 1, minWidth: 0 }}>
           Skipped {warnings.length} dir{warnings.length === 1 ? "" : "s"} from CHANGES
           {summary && <span style={{ color: "var(--text-faint)" }}> ({summary})</span>}
@@ -1761,7 +1788,7 @@ function ViewerContent({
   if (fileData?.is_binary) return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)", fontSize: 13 }}>
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 32, marginBottom: 8 }}>🗂</div>
+        <div style={{ fontSize: 32, marginBottom: 8 }}><IconArchive /></div>
         <div style={{ color: "var(--text-secondary)" }}>Binary file</div>
         {fileData.size != null && (
           <div style={{ fontSize: 11, marginTop: 4, color: "var(--text-faint)" }}>
