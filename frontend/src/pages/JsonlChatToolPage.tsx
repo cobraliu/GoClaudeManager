@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import { parseJsonlFile } from "../api/sessionApi";
+import { IconSun, IconMoon } from "../components/icons";
 import { renderConversationBody, LIGHT_STYLE, DARK_STYLE } from "../lib/exportChat";
 import { attachInteractions } from "../lib/chatInteractions";
 
@@ -127,7 +128,7 @@ export function JsonlChatToolPage({ onBack, theme, onToggleTheme }: Props) {
           {status === "done" || status === "error" ? "重新上传" : "选择 .jsonl 文件"}
         </button>
         <button type="button" style={btn()} onClick={onToggleTheme} title="切换深色 / 浅色">
-          {dark ? "☀️ 浅色" : "🌙 深色"}
+          {dark ? <><IconSun style={{ verticalAlign: "-0.15em" }} /> 浅色</> : <><IconMoon style={{ verticalAlign: "-0.15em" }} /> 深色</>}
         </button>
         <input
           ref={fileInputRef}

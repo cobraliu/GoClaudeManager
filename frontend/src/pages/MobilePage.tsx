@@ -118,6 +118,25 @@ import {
   type FileAccessSpec,
 } from "../api/sessionApi";
 import { ShareFileSelector } from "../components/ShareFileSelector";
+import {
+  IconSun,
+  IconMoon,
+  IconSettings,
+  IconPuzzle,
+  IconTrash,
+  IconWarning,
+  IconSave,
+  IconEdit,
+  IconPin,
+  IconUsers,
+  IconSearch,
+  IconClock,
+  IconEye,
+  IconMenu,
+  IconChat,
+  IconLink,
+  IconFolder,
+} from "../components/icons";
 import gitIcon from "../assets/git.svg";
 import terminalIcon from "../assets/terminal.svg";
 import scheduleIcon from "../assets/schedule.svg";
@@ -789,17 +808,17 @@ function ListView({ username, onLogout, onOpen, onSwitchToAdmin, onOpenTool, the
           {onToggleTheme && (
             <button onClick={onToggleTheme} title="Toggle theme"
               style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-muted)", fontSize: 14, padding: "4px 7px", cursor: "pointer" }}>
-              {theme === "light" ? "🌙" : "☀️"}
+              {theme === "light" ? <IconMoon /> : <IconSun />}
             </button>
           )}
           <button onClick={() => setShowSettings(true)} title="Settings"
             style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-muted)", fontSize: 14, padding: "4px 7px", cursor: "pointer" }}>
-            ⚙
+            <IconSettings />
           </button>
           {onOpenTool && (
             <button onClick={onOpenTool} title="渲染本地 JSONL 文件为 Chat 视图"
               style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text-muted)", fontSize: 14, padding: "4px 7px", cursor: "pointer" }}>
-              🧩
+              <IconPuzzle />
             </button>
           )}
           {onSwitchToAdmin && (
@@ -877,7 +896,7 @@ function ListView({ username, onLogout, onOpen, onSwitchToAdmin, onOpenTool, the
                         disabled={deletingId === s.id}
                         style={{ background: "transparent", border: "none", color: deletingId === s.id ? "var(--text-faintest)" : "var(--text-faint)", fontSize: 16, padding: "2px 4px", cursor: "pointer", flexShrink: 0, lineHeight: 1 }}
                         title="Delete"
-                      >🗑</button>
+                      ><IconTrash /></button>
                     </>
                   )}
                   <span style={{ fontSize: 13, color: "var(--text-faint)" }}>›</span>
@@ -1397,7 +1416,7 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
         <>
           {mergeStatus?.in_progress && (
             <div style={{ padding: "10px 12px", background: "rgba(248,81,73,0.12)", borderBottom: "1px solid var(--accent-red)", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-              <span style={{ color: "var(--accent-red)", fontSize: 14, flexShrink: 0 }}>⚠</span>
+              <span style={{ color: "var(--accent-red)", fontSize: 14, flexShrink: 0 }}><IconWarning /></span>
               <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: "var(--text-body)" }}>
                 <div>Merge in progress — <span style={{ fontFamily: "monospace", color: "var(--accent-amber)" }}>{mergeStatus.merge_head}</span> → <span style={{ fontFamily: "monospace", color: "var(--accent-blue)" }}>{mergeStatus.current_branch}</span></div>
                 {mergeStatus.conflicted_files.length > 0 && (
@@ -2150,7 +2169,7 @@ function _MobileDiffTabBody({
             >
               <span style={{ color: _MERGE_STATUS_COLOR[f.status] || "var(--text-muted)", marginRight: 4 }}>{f.status}</span>
               {f.path.split("/").pop()}
-              {isConflict && <span style={{ marginLeft: 4 }}>⚠</span>}
+              {isConflict && <span style={{ marginLeft: 4 }}><IconWarning /></span>}
             </button>
           );
         })}
@@ -2235,7 +2254,7 @@ function MobileMergeResolver({
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
       {backupBranch && (
         <div style={{ padding: "6px 14px", fontSize: 11, background: "rgba(88,166,255,0.08)", borderBottom: "1px solid var(--border)", color: "var(--text-body)", display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }}>
-          <span><span style={{ color: "var(--accent-blue)" }}>💾 Backup:</span> <span style={{ fontFamily: "monospace", color: "var(--accent-blue)" }}>{backupBranch}</span></span>
+          <span><span style={{ color: "var(--accent-blue)" }}><IconSave style={{ verticalAlign: "-0.15em" }} /> Backup:</span> <span style={{ fontFamily: "monospace", color: "var(--accent-blue)" }}>{backupBranch}</span></span>
           <span style={{ color: "var(--text-muted)" }}>Roll back: <span style={{ fontFamily: "monospace" }}>git reset --hard {backupBranch}</span></span>
         </div>
       )}
@@ -3009,7 +3028,7 @@ function MobileAuqsPanel({
                               color: "#f59e0b", whiteSpace: "nowrap",
                               verticalAlign: 1,
                             }}
-                          >✎ custom</span>
+                          ><IconEdit style={{ verticalAlign: "-0.15em" }} /> custom</span>
                         )}
                       </div>
                     ) : (
@@ -3496,7 +3515,7 @@ function MobileShellPanel({ sessionId, cwd, onClose, onMinimize, minimized, font
             disabled={busy}
             title="Save (name) this terminal so it persists"
             style={{ background: "var(--bg-hover)", color: "var(--text-body)", fontSize: 12, padding: "5px 9px", border: "none", borderRadius: 6, lineHeight: 1 }}
-          >💾</button>
+          ><IconSave /></button>
         )}
         {attached && (
           <button
@@ -3504,7 +3523,7 @@ function MobileShellPanel({ sessionId, cwd, onClose, onMinimize, minimized, font
             disabled={busy}
             title="Delete this terminal"
             style={{ background: "var(--bg-hover)", color: "var(--text-muted)", fontSize: 12, padding: "5px 9px", border: "none", borderRadius: 6, lineHeight: 1 }}
-          >🗑</button>
+          ><IconTrash /></button>
         )}
         {onMinimize && (
           <button onClick={onMinimize} title="Minimize (keep alive)" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text-secondary)", fontSize: 16, padding: "2px 10px", cursor: "pointer", lineHeight: 1, borderRadius: 6 }}>
@@ -3601,10 +3620,10 @@ function MobileShellPanel({ sessionId, cwd, onClose, onMinimize, minimized, font
                   cursor: "pointer", fontFamily: "monospace",
                 }}
               >
-                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📌 {t.name}</span>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><IconPin style={{ verticalAlign: "-0.15em" }} /> {t.name}</span>
                 {t.attach_count > 0 && (
                   <span style={{ fontSize: 10, padding: "2px 6px", background: "rgba(34,197,94,0.18)", color: "#22c55e", borderRadius: 3 }}>
-                    👥{t.attach_count}
+                    <IconUsers style={{ verticalAlign: "-0.15em" }} />{t.attach_count}
                   </span>
                 )}
               </button>
@@ -3629,7 +3648,7 @@ function MobileShellPanel({ sessionId, cwd, onClose, onMinimize, minimized, font
                 <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>▶ {t.term_id.slice(0, 8)}</span>
                 {t.attach_count > 0 && (
                   <span style={{ fontSize: 10, padding: "2px 6px", background: "rgba(34,197,94,0.18)", color: "#22c55e", borderRadius: 3 }}>
-                    👥{t.attach_count}
+                    <IconUsers style={{ verticalAlign: "-0.15em" }} />{t.attach_count}
                   </span>
                 )}
               </button>
@@ -4660,12 +4679,12 @@ function MobileFileBrowserPanel({
       </div>
       {/* Toolbar row: actions */}
       <div style={{ padding: "4px 8px 6px", background: "var(--bg-surface)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 4, flexShrink: 0, overflowX: "auto" }}>
-        <button title="Search" onClick={() => setSheet("search")} style={toolbarBtnStyle}>🔍</button>
+        <button title="Search" onClick={() => setSheet("search")} style={toolbarBtnStyle}><IconSearch /></button>
         <button title="New file" onClick={() => setSheet("newFile")} style={toolbarBtnStyle}>✚</button>
         <button title="New folder" onClick={() => setSheet("newFolder")} style={{ ...toolbarBtnStyle, display: "flex", alignItems: "center", justifyContent: "center" }}><NewFolderIcon size={15} color="var(--text-body)" /></button>
         <button title="Upload" onClick={() => setSheet("upload")} style={toolbarBtnStyle}>⬆</button>
         <button title="Download workspace .zip" disabled={zipBusy} onClick={handleDownloadZip}
-          style={{ ...toolbarBtnStyle, opacity: zipBusy ? 0.4 : 1 }}>{zipBusy ? "…" : "💾"}</button>
+          style={{ ...toolbarBtnStyle, opacity: zipBusy ? 0.4 : 1 }}>{zipBusy ? "…" : <IconSave />}</button>
         <span style={{ flex: 1 }} />
         <button onClick={() => setShowHidden(h => !h)}
           style={{ fontSize: 11, padding: "4px 10px", background: showHidden ? "color-mix(in srgb, var(--accent-blue) 20%, var(--bg-base))" : "var(--bg-hover)", color: showHidden ? "var(--accent-blue)" : "var(--text-muted)", border: "1px solid " + (showHidden ? "var(--accent-blue)" : "var(--border)"), borderRadius: 5, flexShrink: 0 }}>
@@ -4927,22 +4946,22 @@ function MobileFileSheet(props: MobileFileSheetProps) {
               <div style={{ padding: "6px 0 14px", fontSize: 11, color: "var(--text-faint)", wordBreak: "break-all" }}>{target.path}</div>
               {target.type === "file" && (
                 <button onClick={() => props.onOpenAction("view")} style={{ ...secondaryBtn, marginBottom: 6, justifyContent: "flex-start", display: "flex", alignItems: "center", gap: 10 }}>
-                  <span>👁</span><span>View</span>
+                  <span><IconEye /></span><span>View</span>
                 </button>
               )}
               <button onClick={() => props.onOpenAction("rename")} style={{ ...secondaryBtn, marginBottom: 6, justifyContent: "flex-start", display: "flex", alignItems: "center", gap: 10 }}>
-                <span>✎</span><span>Rename</span>
+                <span><IconEdit /></span><span>Rename</span>
               </button>
               <button onClick={() => props.onOpenAction("move")} style={{ ...secondaryBtn, marginBottom: 6, justifyContent: "flex-start", display: "flex", alignItems: "center", gap: 10 }}>
                 <span>↗</span><span>Move</span>
               </button>
               {target.type === "file" && (
                 <button onClick={() => props.onOpenAction("gitHistory")} style={{ ...secondaryBtn, marginBottom: 6, justifyContent: "flex-start", display: "flex", alignItems: "center", gap: 10 }}>
-                  <span>🕒</span><span>Git history</span>
+                  <span><IconClock /></span><span>Git history</span>
                 </button>
               )}
               <button onClick={() => props.onOpenAction("delete")} style={{ ...secondaryBtn, marginBottom: 6, justifyContent: "flex-start", display: "flex", alignItems: "center", gap: 10, color: "var(--accent-red)", borderColor: "var(--accent-red)" }}>
-                <span>🗑</span><span>Delete</span>
+                <span><IconTrash /></span><span>Delete</span>
               </button>
             </div>
           )}
@@ -5251,7 +5270,7 @@ function SessionDrawer({
                         disabled={deletingId === s.id}
                         style={{ background: "transparent", border: "none", color: deletingId === s.id ? "var(--text-faintest)" : "var(--text-faint)", fontSize: 15, padding: "1px 3px", cursor: "pointer", flexShrink: 0, lineHeight: 1 }}
                         title="Delete"
-                      >{deletingId === s.id ? "…" : "🗑"}</button>
+                      >{deletingId === s.id ? "…" : <IconTrash />}</button>
                     )}
                   </div>
                   {s.prompts?.[0] && <div style={{ fontSize: 12, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingLeft: 13 }}><PromptText text={s.prompts[0]} /></div>}
@@ -5308,11 +5327,11 @@ function SessionDrawer({
             <span style={{ fontSize: 12, color: "var(--text-faint)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{username}</span>
             {onToggleTheme && (
               <button onClick={onToggleTheme} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-muted)", fontSize: 14, padding: "4px 8px", cursor: "pointer" }} title="Toggle theme">
-                {theme === "light" ? "🌙" : "☀️"}
+                {theme === "light" ? <IconMoon /> : <IconSun />}
               </button>
             )}
             {onOpenSettings && (
-              <button onClick={() => { onClose(); onOpenSettings(); }} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-muted)", fontSize: 14, padding: "4px 8px", cursor: "pointer" }} title="Settings">⚙</button>
+              <button onClick={() => { onClose(); onOpenSettings(); }} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-muted)", fontSize: 14, padding: "4px 8px", cursor: "pointer" }} title="Settings"><IconSettings /></button>
             )}
             {onSwitchToAdmin && (
               <button onClick={() => { onSwitchToAdmin(); onClose(); }} style={{ background: "rgba(88,166,255,0.12)", border: "1px solid rgba(88,166,255,0.3)", borderRadius: 7, color: "var(--accent-blue)", fontSize: 12, padding: "4px 10px", cursor: "pointer" }}>
@@ -5548,7 +5567,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
             onClick={() => setDrawerOpen(true)}
             style={{ background: "transparent", border: "none", color: "var(--text-muted)", fontSize: 20, padding: "0 4px", cursor: "pointer", lineHeight: 1, flexShrink: 0, width: 36 }}
             title="Sessions"
-          >☰</button>
+          ><IconMenu /></button>
           <div style={{ flex: 1, minWidth: 0, textAlign: "center" }}>
             {renamingDetail ? (
               <input
@@ -5572,7 +5591,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
                   onClick={() => { setRenameDetailValue(session.project); setRenamingDetail(true); }}
                   style={{ background: "transparent", border: "none", color: "var(--text-faint)", fontSize: 13, cursor: "pointer", padding: 0, flexShrink: 0 }}
                   title="Rename session"
-                >✎</button>
+                ><IconEdit /></button>
               </div>
             )}
           </div>
@@ -5612,7 +5631,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
             { icon: <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: -0.3 }}>☑</span>, title: "Tasks", onClick: () => setShowTasks(true), color: iconMuted, bg: "transparent" },
             { icon: <span style={{ fontSize: 11, fontWeight: 700 }}>◎</span>, title: "Goals", onClick: () => setShowGoals(true), color: iconMuted, bg: "transparent" },
             { icon: <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: -0.2 }}>Q?</span>, title: "AUQs", onClick: () => setShowAuqs(true), color: iconMuted, bg: "transparent" },
-            { icon: <span style={{ fontSize: 12, fontWeight: 700 }}>⚙</span>, title: "Procs", onClick: () => setShowProcs(true), color: iconMuted, bg: "transparent" },
+            { icon: <span style={{ fontSize: 12, fontWeight: 700 }}><IconSettings /></span>, title: "Procs", onClick: () => setShowProcs(true), color: iconMuted, bg: "transparent" },
             {
               icon: <span style={{ fontSize: 10, fontWeight: 700 }}>{modelLabel}</span>,
               title: `Model: ${session.model || "default"}`,
@@ -5787,7 +5806,7 @@ function DetailView({ session: initialSession, onBack, username, onLogout, onSwi
         <button
           onClick={() => setViewMode("chat")}
           style={{ flex: 1, height: 30, background: "transparent", border: "none", borderBottom: viewMode === "chat" ? "2px solid var(--accent-blue)" : "2px solid transparent", color: viewMode === "chat" ? "var(--accent-blue)" : "var(--text-faint)", fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "color 0.15s" }}
-        >💬 Chat</button>
+        ><IconChat style={{ verticalAlign: "-0.15em" }} /> Chat</button>
         {!isCodexAppServer && (
           <button
             onClick={switchToTui}
@@ -5951,7 +5970,7 @@ function MobileSettingsPanel({ open, onClose, theme, onToggleTheme, terminalFont
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 3500, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end" }}>
       <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxHeight: "85vh", background: "var(--bg-surface)", borderRadius: "12px 12px 0 0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-bright)" }}>⚙ Settings</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-bright)" }}><IconSettings style={{ verticalAlign: "-0.15em" }} /> Settings</span>
           <button onClick={onClose} style={{ background: "var(--bg-hover)", border: "none", color: "var(--text-secondary)", fontSize: 13, padding: "4px 12px", borderRadius: 6, cursor: "pointer" }}>✕</button>
         </div>
         <div style={{ overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: 20 }}>
@@ -5963,11 +5982,11 @@ function MobileSettingsPanel({ open, onClose, theme, onToggleTheme, terminalFont
                 <button
                   onClick={() => { if (theme !== "dark") onToggleTheme(); }}
                   style={{ flex: 1, padding: "10px 12px", borderRadius: 8, fontSize: 13, border: `1px solid ${theme === "dark" ? "var(--accent-blue)" : "var(--border)"}`, background: theme === "dark" ? "rgba(88,166,255,0.12)" : "var(--bg-base)", color: theme === "dark" ? "var(--accent-blue)" : "var(--text-body)", cursor: "pointer" }}
-                >🌙 Dark</button>
+                ><IconMoon style={{ verticalAlign: "-0.15em" }} /> Dark</button>
                 <button
                   onClick={() => { if (theme !== "light") onToggleTheme(); }}
                   style={{ flex: 1, padding: "10px 12px", borderRadius: 8, fontSize: 13, border: `1px solid ${theme === "light" ? "var(--accent-blue)" : "var(--border)"}`, background: theme === "light" ? "rgba(88,166,255,0.12)" : "var(--bg-base)", color: theme === "light" ? "var(--accent-blue)" : "var(--text-body)", cursor: "pointer" }}
-                >☀️ Light</button>
+                ><IconSun style={{ verticalAlign: "-0.15em" }} /> Light</button>
               </div>
             </section>
           )}
@@ -6112,7 +6131,7 @@ function MobileSharePanel({ open, onClose, session }: { open: boolean; onClose: 
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 3500, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxHeight: "88vh", background: "var(--bg-surface)", borderRadius: "12px 12px 0 0", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-bright)" }}>🔗 分享对话</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-bright)" }}><IconLink style={{ verticalAlign: "-0.15em" }} /> 分享对话</span>
           <button onClick={onClose} style={{ background: "var(--bg-hover)", border: "none", color: "var(--text-secondary)", fontSize: 13, padding: "4px 12px", borderRadius: 6 }}>✕</button>
         </div>
 
@@ -6134,13 +6153,13 @@ function MobileSharePanel({ open, onClose, session }: { open: boolean; onClose: 
               </div>
               {shareType === "chat" && (
                 <div style={{ border: "1px solid #e05260", background: "rgba(224,82,96,0.10)", borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.55, color: "#e05260" }}>
-                  <div style={{ fontWeight: 700, marginBottom: 3 }}>⚠️ 高危：可对话分享</div>
+                  <div style={{ fontWeight: 700, marginBottom: 3 }}><IconWarning style={{ verticalAlign: "-0.15em" }} /> 高危：可对话分享</div>
                   拿到链接的人可<b>向该会话发指令</b>（Claude 可执行命令、改文件）并<b>只读全部文件</b>。仅分享给可信任的人。
                 </div>
               )}
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => setDefaultTheme("light")} style={chip(defaultTheme === "light")}>☀️ 浅色</button>
-                <button onClick={() => setDefaultTheme("dark")} style={chip(defaultTheme === "dark")}>🌙 深色</button>
+                <button onClick={() => setDefaultTheme("light")} style={chip(defaultTheme === "light")}><IconSun style={{ verticalAlign: "-0.15em" }} /> 浅色</button>
+                <button onClick={() => setDefaultTheme("dark")} style={chip(defaultTheme === "dark")}><IconMoon style={{ verticalAlign: "-0.15em" }} /> 深色</button>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {([["1d", "1天"], ["7d", "7天"], ["30d", "30天"], ["permanent", "永久"]] as const).map(([id, lbl]) => (
@@ -6156,7 +6175,7 @@ function MobileSharePanel({ open, onClose, session }: { open: boolean; onClose: 
                     onClick={() => setShowFiles((v) => !v)}
                     style={{ width: "100%", textAlign: "left", padding: "9px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-base)", color: "var(--text-body)", fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}
                   >
-                    <span>📁 可查看的文件{fileAccess.full.length + fileAccess.files.length > 0 ? `（${fileAccess.full.length + fileAccess.files.length}）` : "（可选）"}</span>
+                    <span><IconFolder style={{ verticalAlign: "-0.15em" }} /> 可查看的文件{fileAccess.full.length + fileAccess.files.length > 0 ? `（${fileAccess.full.length + fileAccess.files.length}）` : "（可选）"}</span>
                     <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{showFiles ? "▼" : "▶"}</span>
                   </button>
                   {showFiles && (
@@ -6273,7 +6292,7 @@ function MobileAttentionBanner({ items, onJump }: { items: MobileAttentionItem[]
             cursor: "pointer", boxShadow: "0 2px 10px rgba(0,0,0,0.25)",
           }}
         >
-          <span>⚠️</span>
+          <span><IconWarning /></span>
           <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {it.name} · {_ATTENTION_LABEL[it.kind]}
           </span>

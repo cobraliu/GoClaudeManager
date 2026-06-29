@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { IconSun, IconMoon } from "./icons";
 import type { LayoutScheme } from "../hooks/useUserConfig";
 import {
   getConfig,
@@ -270,7 +271,7 @@ export function UserConfigModal({
                   color: theme === "dark" ? "var(--accent-blue)" : "var(--text-body)",
                   cursor: "pointer",
                 }}
-              >🌙 Dark</button>
+              ><IconMoon style={{ verticalAlign: "-0.15em" }} /> Dark</button>
               <button
                 onClick={() => { if (theme !== "light") onToggleTheme(); }}
                 style={{
@@ -280,7 +281,7 @@ export function UserConfigModal({
                   color: theme === "light" ? "var(--accent-blue)" : "var(--text-body)",
                   cursor: "pointer",
                 }}
-              >☀️ Light</button>
+              ><IconSun style={{ verticalAlign: "-0.15em" }} /> Light</button>
             </div>
           </section>
 

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef, Fragment } from "react";
+import { IconSun, IconMoon } from "../components/icons";
 import {
   listUsers,
   createUser,
@@ -332,7 +333,7 @@ export function AdminPage({ onLogout, onBack, theme, onToggleTheme }: Props) {
               marginRight: 8,
             }}
           >
-            {theme === "dark" ? "☀️" : "🌙"}
+            {theme === "dark" ? <IconSun /> : <IconMoon />}
           </button>
           <button
             onClick={onLogout}

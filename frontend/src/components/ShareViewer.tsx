@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { IconSun, IconMoon } from "./icons";
 import {
   getPublicShareMeta,
   getPublicShareMessages,
@@ -263,7 +264,7 @@ function ShareToolBar({
         {order === "desc" ? "🔽 最新在下" : "🔼 最早在上"}
       </button>
       <button type="button" style={btn(false)} onClick={onToggleTheme} title="切换深色 / 浅色">
-        {theme === "dark" ? "☀️ 浅色" : "🌙 深色"}
+        {theme === "dark" ? <><IconSun style={{ verticalAlign: "-0.15em" }} /> 浅色</> : <><IconMoon style={{ verticalAlign: "-0.15em" }} /> 深色</>}
       </button>
     </div>
   );

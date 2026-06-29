@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { login, loginWithGoogle, getGoogleClientId } from "../api/sessionApi";
+import { IconSun, IconMoon } from "../components/icons";
 
 interface Props {
   onLogin: (username: string, role: "admin" | "user", is_admin: boolean) => void;
@@ -123,7 +124,7 @@ export function LoginPage({ onLogin, theme, onToggleTheme }: Props) {
         title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
         style={{ position: "absolute", top: 16, right: 16, background: "none", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 14, color: "var(--text-muted)" }}
       >
-        {theme === "dark" ? "☀️" : "🌙"}
+        {theme === "dark" ? <IconSun /> : <IconMoon />}
       </button>
       <form
         onSubmit={handleSubmit}

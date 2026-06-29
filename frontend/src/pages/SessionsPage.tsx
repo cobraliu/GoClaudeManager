@@ -63,6 +63,16 @@ import { TextSelectionMenu } from "../components/TextSelectionMenu";
 import { AsciiflowModal } from "../components/AsciiflowModal";
 import { useUserConfig, type LayoutScheme } from "../hooks/useUserConfig";
 import { useSessionTabs, type TabEntry } from "../hooks/useSessionTabs";
+import {
+  IconSun,
+  IconMoon,
+  IconSettings,
+  IconPuzzle,
+  IconLink,
+  IconDownload,
+  IconFile,
+  IconChat,
+} from "../components/icons";
 
 const PAGE_SIZE = 30;
 
@@ -2280,7 +2290,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                   title="Admin panel"
                   style={{ background: "#1e3a5f", color: "var(--accent-blue)", fontSize: compact ? 14 : 11, padding: compact ? "3px 7px" : "4px 8px", border: "1px solid #1e4a7f", borderRadius: 4, lineHeight: 1 }}
                 >
-                  {compact ? "⚙" : "Admin"}
+                  {compact ? <IconSettings /> : "Admin"}
                 </button>
               )}
               <button
@@ -2288,7 +2298,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                 title="User Config (layout, theme, terminal font)"
                 style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", fontSize: compact ? 14 : 11, padding: compact ? "3px 7px" : "4px 8px", border: "1px solid var(--border)", borderRadius: 4, lineHeight: 1 }}
               >
-                {compact ? "⚙" : "⚙ Config"}
+                {compact ? <IconSettings /> : <><IconSettings style={{ verticalAlign: "-0.15em" }} /> Config</>}
               </button>
               <button
                 onClick={() => setShowAsciiflow(true)}
@@ -2303,7 +2313,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                   title="渲染本地 JSONL 文件为 Chat 视图"
                   style={{ background: "var(--bg-hover)", color: "var(--text-secondary)", fontSize: compact ? 14 : 11, padding: compact ? "3px 7px" : "4px 8px", border: "1px solid var(--border)", borderRadius: 4, lineHeight: 1 }}
                 >
-                  {compact ? "🧩" : "🧩 JSONL"}
+                  {compact ? <IconPuzzle /> : <><IconPuzzle style={{ verticalAlign: "-0.15em" }} /> JSONL</>}
                 </button>
               )}
             </div>
@@ -2454,7 +2464,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                   color: "var(--text-muted)", display: "flex", alignItems: "center",
                 }}
               >
-                {theme === "dark" ? "☀️" : "🌙"}
+                {theme === "dark" ? <IconSun /> : <IconMoon />}
               </button>
               <button
                 onClick={onLogout}
@@ -2912,7 +2922,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                   title="分享对话"
                   style={{ fontSize: 11, padding: "2px 10px", background: "transparent", color: "var(--text-faint)", border: "1px solid transparent", borderRadius: 4 }}
                 >
-                  🔗 Share
+                  <IconLink style={{ verticalAlign: "-0.15em" }} /> Share
                 </button>
               )}
               {activeSessionMeta && (
@@ -2921,7 +2931,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                   title="Export chat as HTML"
                   style={{ fontSize: 11, padding: "2px 10px", background: "transparent", color: "var(--text-faint)", border: "1px solid transparent", borderRadius: 4 }}
                 >
-                  📥 HTML
+                  <IconDownload style={{ verticalAlign: "-0.15em" }} /> HTML
                 </button>
               )}
               {activeSessionMeta && activeSessionMeta.agent_session_id && (
@@ -2937,7 +2947,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                   title="Preview conversation JSONL"
                   style={{ fontSize: 11, padding: "2px 10px", background: inlineView === "jsonl" ? "var(--bg-hover)" : "transparent", color: inlineView === "jsonl" ? "var(--text-body)" : "var(--text-faint)", border: "1px solid " + (inlineView === "jsonl" ? "var(--text-faint)" : "transparent"), borderRadius: 4 }}
                 >
-                  📄 JSONL
+                  <IconFile style={{ verticalAlign: "-0.15em" }} /> JSONL
                 </button>
               )}
               {activeSessionMeta && (
@@ -2963,7 +2973,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                     onClick={() => { setRightMode("bubble"); setInlineView(null); setCodeFileView(null); }}
                     style={{ fontSize: 11, padding: "2px 10px", background: isActive ? "var(--bg-hover)" : "transparent", color: isActive ? "var(--text-body)" : "var(--text-faint)", border: "1px solid " + (isActive ? "var(--text-faint)" : "transparent"), borderRadius: 4 }}
                   >
-                    💬 Chat
+                    <IconChat style={{ verticalAlign: "-0.15em" }} /> Chat
                   </button>
                 );
               })()}
