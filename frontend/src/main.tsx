@@ -1,6 +1,7 @@
 import React, { useState, useEffect, Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
 import { LoginPage } from "./pages/LoginPage";
+import { getMe } from "./api/sessionApi";
 import type { ShareType } from "./api/sessionApi";
 import { startMermaidObserver } from "./lib/mermaid";
 import { apiPath } from "./lib/baseUrl";
@@ -109,6 +110,26 @@ function App() {
         setLoggedIn(false);
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Refresh identity from the backend on load. The Admin entry is gated on the
+  // JWT's is_admin claim, but a token in localStorage can be stale — minted
+  // before the user became admin, or by the legacy Python service. The server
+  // middleware treats role==="admin" as admin regardless, so ask it and correct
+  // our cached view. A 401 here is handled globally by request() (clears the
+  // token and reloads to the login page).
+  useEffect(() => {
+    if (!localStorage.getItem("token")) return;
+    getMe()
+      .then((me) => {
+        localStorage.setItem("username", me.username);
+        localStorage.setItem("role", me.role);
+        localStorage.setItem("is_admin", String(me.is_admin));
+        setUsername(me.username);
+        setRole(me.role);
+        setIsAdminUser(me.is_admin);
+      })
+      .catch(() => {}); // network errors: keep the cached view
   }, []);
 
   const toggleTheme = () => setTheme(t => t === "dark" ? "light" : "dark");

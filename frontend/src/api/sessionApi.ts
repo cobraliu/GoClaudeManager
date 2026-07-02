@@ -197,6 +197,12 @@ export function login(
   );
 }
 
+// Fresh identity from the backend (is_admin ORs role==="admin" server-side).
+// Used on app load to correct stale JWT claims without a re-login.
+export function getMe(): Promise<{ username: string; role: "admin" | "user"; is_admin: boolean }> {
+  return request("/api/auth/me");
+}
+
 export function getGoogleClientId(): Promise<{ client_id: string }> {
   return request("/api/auth/google-client-id", {}, true);
 }

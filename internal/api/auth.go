@@ -26,6 +26,15 @@ func authRouter(d Deps) http.Handler {
 	r.Post("/google", func(w http.ResponseWriter, r *http.Request) { googleLogin(d, w, r) })
 	r.Post("/login", func(w http.ResponseWriter, r *http.Request) { login(d, w, r) })
 
+	// Current identity as the middleware sees it (is_admin here already ORs
+	// role=="admin"). The SPA calls this on load to refresh a stale token's
+	// claims — e.g. a JWT minted before the user became admin, or by the legacy
+	// Python service — without forcing a re-login.
+	r.With(d.Auth.RequireUser).Get("/me", func(w http.ResponseWriter, r *http.Request) {
+		id := auth.FromContext(r.Context())
+		writeJSON(w, http.StatusOK, model.UserInfo{Username: id.Username, Role: id.Role, IsAdmin: id.IsAdmin})
+	})
+
 	// Admin-only user management.
 	r.With(d.Auth.RequireAdmin).Post("/users", func(w http.ResponseWriter, r *http.Request) { createUser(d, w, r) })
 	r.With(d.Auth.RequireAdmin).Get("/users", func(w http.ResponseWriter, r *http.Request) { listUsers(d, w, r) })
@@ -280,12 +289,18 @@ func autologin(d Deps, w http.ResponseWriter, r *http.Request) {
 }
 
 func issueLogin(d Deps, w http.ResponseWriter, user *model.User) {
-	tok, err := d.Auth.CreateJWT(user.Username, user.Role, user.IsAdmin)
+	// Mirror the middleware (auth.decode): a "admin" role is admin even if the
+	// is_admin column was never set — e.g. a pre-existing/migrated DB whose users
+	// table wasn't empty at first boot, so the SetIsAdmin(true) seed was skipped.
+	// Without this the frontend (which gates the Admin entry on the JWT is_admin
+	// claim) would hide the panel from a working admin.
+	isAdmin := user.IsAdmin || user.Role == model.RoleAdmin
+	tok, err := d.Auth.CreateJWT(user.Username, user.Role, isAdmin)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, model.LoginResponse{
-		Token: tok, Username: user.Username, Role: user.Role, IsAdmin: user.IsAdmin,
+		Token: tok, Username: user.Username, Role: user.Role, IsAdmin: isAdmin,
 	})
 }
