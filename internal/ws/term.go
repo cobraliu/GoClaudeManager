@@ -422,6 +422,9 @@ func spawnBash(cwd string, cols, rows int, unrestricted bool) (*os.File, *exec.C
 
 	cmd := exec.Command("bash", "--init-file", initFile)
 	cmd.Dir = cwd
+	// Pin TERM to what xterm.js emulates: a headless-started server (systemd,
+	// nohup) has TERM unset or "dumb", which breaks clear/vim/htop in the shell.
+	cmd.Env = tmux.EnvWithTerm(os.Environ())
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 	if err != nil {
 		_ = os.Remove(initFile)

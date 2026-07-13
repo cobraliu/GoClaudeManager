@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/creack/pty"
@@ -114,6 +115,18 @@ func (h *PtyHandle) Close() error {
 	return nil
 }
 
+// EnvWithTerm returns env with TERM forced to xterm-256color, the terminal
+// type the web frontend (xterm.js) actually emulates for every PTY we hand it.
+func EnvWithTerm(env []string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "TERM=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, "TERM=xterm-256color")
+}
+
 // AttachPTY attaches to a tmux session via a PTY for raw terminal I/O.
 // (Port of attach_pty.)
 //
@@ -130,6 +143,13 @@ func (c *Client) AttachPTY(sessionName string, cols, rows int) (*PtyHandle, erro
 	}
 
 	cmd := exec.Command(c.TmuxBin, "-L", c.SocketName, "attach-session", "-t", sessionName)
+	// The real terminal on the other end is always the web UI's xterm.js, but
+	// tmux validates the client tty against $TERM's terminfo. When the server
+	// was started without a terminal (systemd, nohup, cron), TERM is unset or
+	// "dumb", whose entry lacks the required `clear` capability and tmux aborts
+	// with "open terminal failed: terminal does not support clear" — so pin the
+	// value that matches the frontend regardless of how the server was launched.
+	cmd.Env = EnvWithTerm(os.Environ())
 	master, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Rows: uint16(rows),
 		Cols: uint16(cols),
