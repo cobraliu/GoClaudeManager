@@ -121,14 +121,28 @@ func New(socketName string) *Client {
 // command and tmux's stderr. (Port of TmuxService._run.)
 //
 // This is the single chokepoint a future control-mode backend would replace.
-// DeliverToPane pastes text into a tmux pane and optionally submits it
-// (port of chat_delivery.deliver_to_pane). set-buffer + paste-buffer (-p
-// bracketed paste, -r to skip LF→CR translation) keeps a multi-line prompt as
-// one input; an explicit send-keys Enter submits it. A prompt containing "@"
-// needs a second Enter.
+// promptMarker is the glyph Claude's TUI prints at the start of its input box.
+// The live input box is always the LAST one in a pane capture (the transcript
+// above may echo submitted prompts with the same glyph).
+const promptMarker = "❯"
+
+// DeliverToPane pastes text into a tmux pane and, when sendEnter is set, submits
+// it — robustly handling Claude's "@" file-mention popup.
+//
+// set-buffer + paste-buffer (-p bracketed paste, -r to skip LF→CR translation)
+// keeps a multi-line prompt as one input. Submitting is the subtle part: every
+// image attachment injects one "@<path>" per image, and "@" makes Claude's TUI
+// open an ASYNC file-completion popup. Dismiss-then-submit needs two Enters, but
+// the popup renders asynchronously — the old fixed-delay "double Enter" raced it,
+// so under load (or with several mentions) the Enters landed before the popup
+// settled, got swallowed, and the text sat in the input box until the *next*
+// submission pushed it through. Instead of guessing a delay we submit and
+// verify: send Enter, check whether the input box actually cleared, and retry a
+// bounded number of times. This converges regardless of render latency.
+// (Port of chat_delivery.deliver_to_pane, hardened.)
 func (c *Client) DeliverToPane(paneTarget, text string, sendEnter bool) error {
-	bufName := fmt.Sprintf("cm-%d", time.Now().UnixMilli())
 	if text != "" {
+		bufName := fmt.Sprintf("cm-%d", time.Now().UnixMilli())
 		if _, err := c.run("set-buffer", "-b", bufName, "--", text); err != nil {
 			return err
 		}
@@ -136,20 +150,63 @@ func (c *Client) DeliverToPane(paneTarget, text string, sendEnter bool) error {
 			return err
 		}
 	}
-	if sendEnter {
-		needsDouble := strings.Contains(text, "@")
+	if !sendEnter {
+		return nil
+	}
+
+	// No "@" → no file-completion popup; a single Enter submits. Give a paste a
+	// brief moment to land first so the Enter isn't swallowed mid-insert.
+	if !strings.Contains(text, "@") {
 		if text != "" {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(120 * time.Millisecond)
 		}
+		_, err := c.run("send-keys", "-t", paneTarget, "Enter")
+		return err
+	}
+
+	// "@" mention path. First wait for the pasted text to actually appear in the
+	// input box, so the submit-and-verify loop below can trust "no mention left"
+	// to mean "it submitted" rather than "the paste hasn't rendered yet".
+	for i := 0; i < 20 && !c.paneInputHasMention(paneTarget); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Submit, then verify the input box cleared; each extra Enter first dismisses
+	// the popup, then submits. Bounded so a genuinely un-submittable box (e.g.
+	// the pane is busy) can't loop forever. Once the box clears we stop, so no
+	// spurious empty submit follows a successful one.
+	for attempt := 0; attempt < 6; attempt++ {
 		if _, err := c.run("send-keys", "-t", paneTarget, "Enter"); err != nil {
 			return err
 		}
-		if needsDouble {
-			time.Sleep(100 * time.Millisecond)
-			_, _ = c.run("send-keys", "-t", paneTarget, "Enter")
+		time.Sleep(120 * time.Millisecond)
+		if !c.paneInputHasMention(paneTarget) {
+			return nil
 		}
 	}
 	return nil
+}
+
+// paneInputHasMention reports whether the pane's live input box still holds an
+// unsent "@" mention. It scans only the region after the LAST prompt marker (the
+// input box is at the bottom) so an identical mention echoed in the transcript
+// above can't cause a false positive. capture-pane -J joins wrapped lines, so a
+// long "@<path>" that soft-wraps across rows is still matched as one string.
+func (c *Client) paneInputHasMention(paneTarget string) bool {
+	out, err := c.run("capture-pane", "-p", "-J", "-t", paneTarget)
+	if err != nil {
+		return false // can't inspect — treat as "nothing pending" so we don't spin
+	}
+	lines := strings.Split(out, "\n")
+	lastPrompt := -1
+	for i, ln := range lines {
+		if strings.Contains(ln, promptMarker) {
+			lastPrompt = i
+		}
+	}
+	if lastPrompt < 0 {
+		return false
+	}
+	return strings.Contains(strings.Join(lines[lastPrompt:], "\n"), "@")
 }
 
 // Run executes an arbitrary tmux command on this client's socket and returns
