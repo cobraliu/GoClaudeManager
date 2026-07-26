@@ -41,7 +41,7 @@ WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-19099}"
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-19098}"
-PROXY_UPSTREAM="${PROXY_UPSTREAM:-http://127.0.0.1:8138}"
+PROXY_UPSTREAM="${PROXY_UPSTREAM:-http://127.0.0.1:7890}"
 
 # One-time migration seed from the legacy Python install. Override LEGACY_DB to
 # point elsewhere, or set it empty to disable seeding entirely.
@@ -84,15 +84,26 @@ esac
 # kill_listener PORT — terminate only the process that is *listening* on PORT
 # (precise, so it never touches the autossh reverse tunnel's client sockets),
 # then wait up to 5s for the port to free.
+# port_listener_pids PORT — pids listening on PORT, using ss where available
+# (Linux) and falling back to lsof (macOS / systems without ss).
+port_listener_pids() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnpH "sport = :$port" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u || true
+  else
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u || true
+  fi
+}
+
 kill_listener() {
   local port="$1" pids pid
-  pids=$(ss -ltnpH "sport = :$port" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | sort -u || true)
+  pids=$(port_listener_pids "$port")
   for pid in $pids; do
     echo "    stopping pid $pid holding :$port"
     kill "$pid" 2>/dev/null || true
   done
   for _ in $(seq 1 25); do
-    ss -ltnH "sport = :$port" 2>/dev/null | grep -q . || return 0
+    [[ -z "$(port_listener_pids "$port")" ]] && return 0
     sleep 0.2
   done
   echo "    WARNING: :$port still occupied after 5s" >&2
