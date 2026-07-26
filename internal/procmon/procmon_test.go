@@ -5,89 +5,19 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestParseStat(t *testing.T) {
-	// pid 1234, comm "(weird) proc" with spaces+parens, ppid 1000.
-	// Layout after the last ')': state(3) ppid(4) pgrp(5) ... so we craft fields
-	// 3..24. utime(14)=50 stime(15)=20 starttime(22)=777 rss(24)=42.
-	rest := []string{
-		"S",    // 3 state
-		"1000", // 4 ppid
-		"1",    // 5 pgrp
-		"1",    // 6 session
-		"0",    // 7 tty_nr
-		"-1",   // 8 tpgid
-		"0",    // 9 flags
-		"0",    // 10 minflt
-		"0",    // 11 cminflt
-		"0",    // 12 majflt
-		"0",    // 13 cmajflt
-		"50",   // 14 utime
-		"20",   // 15 stime
-		"0",    // 16 cutime
-		"0",    // 17 cstime
-		"20",   // 18 priority
-		"0",    // 19 nice
-		"1",    // 20 num_threads
-		"0",    // 21 itrealvalue
-		"777",  // 22 starttime
-		"0",    // 23 vsize
-		"42",   // 24 rss (pages)
-	}
-	line := []byte("1234 ((weird) proc) " + strings.Join(rest, " ") + "\n")
-
-	pid, ppid, utimeStime, starttime, rss, ok := parseStat(line)
-	if !ok {
-		t.Fatal("parseStat returned ok=false")
-	}
-	if pid != 1234 || ppid != 1000 {
-		t.Errorf("pid/ppid = %d/%d, want 1234/1000", pid, ppid)
-	}
-	if utimeStime != 70 {
-		t.Errorf("utimeStime = %d, want 70", utimeStime)
-	}
-	if starttime != 777 {
-		t.Errorf("starttime = %d, want 777", starttime)
-	}
-	if rss != 42 {
-		t.Errorf("rss pages = %d, want 42", rss)
-	}
-}
-
-func TestParseStatTooShort(t *testing.T) {
-	if _, _, _, _, _, ok := parseStat([]byte("1 (init) S 0 0")); ok {
-		t.Error("expected ok=false for a truncated stat line")
-	}
-}
-
 func TestCPUPercent(t *testing.T) {
-	// 200 jiffies over 2s with clkTck=100 => 1.0 CPU-second/s => 100% (one core).
-	if got := cpuPercent(200, 2.0, 8); got != 100 {
+	// 2.0 CPU-seconds over 2s => 1.0 CPU-second/s => 100% (one core).
+	if got := cpuPercent(2.0, 2.0, 8); got != 100 {
 		t.Errorf("cpuPercent = %v, want 100", got)
 	}
 	// Clamped to 100*numCPU.
 	if got := cpuPercent(1_000_000, 0.001, 2); got != 200 {
 		t.Errorf("cpuPercent clamp = %v, want 200", got)
 	}
-	if got := cpuPercent(100, 0, 4); got != 0 {
+	if got := cpuPercent(1.0, 0, 4); got != 0 {
 		t.Errorf("cpuPercent with zero elapsed = %v, want 0", got)
-	}
-}
-
-func TestUptimeSeconds(t *testing.T) {
-	now := time.Unix(1_000_900, 0)
-	// btime=1_000_000, starttime=10000 jiffies => start at 1_000_100 => 800s ago.
-	if got := uptimeSeconds(10000, 1_000_000, now); got != 800 {
-		t.Errorf("uptimeSeconds = %d, want 800", got)
-	}
-	// Future starttime (clock skew) clamps to 0.
-	if got := uptimeSeconds(100_000_000, 1_000_000, now); got != 0 {
-		t.Errorf("uptimeSeconds clamp = %d, want 0", got)
-	}
-	if got := uptimeSeconds(123, 0, now); got != 0 {
-		t.Errorf("uptimeSeconds with no btime = %d, want 0", got)
 	}
 }
 
@@ -168,7 +98,7 @@ func TestTailFileHugeSingleLine(t *testing.T) {
 	}
 }
 
-func TestSampleNonLinuxOrBadPID(t *testing.T) {
+func TestSampleBadPID(t *testing.T) {
 	s := NewSampler()
 	snap := s.Sample("sess", 0, 30)
 	if len(snap.Processes) != 0 {
@@ -176,5 +106,40 @@ func TestSampleNonLinuxOrBadPID(t *testing.T) {
 	}
 	if snap.Processes == nil {
 		t.Error("Processes must never be nil")
+	}
+}
+
+// TestSampleLiveTree exercises the real gopsutil path against this test
+// process's own tree on whatever platform the tests run on. The test process
+// always has a parent (the `go test` runner), so rooting at the parent must
+// surface at least the parent and this process.
+func TestSampleLiveTree(t *testing.T) {
+	root := os.Getppid()
+	s := NewSampler()
+	snap := s.Sample("live", root, 30)
+	if len(snap.Processes) == 0 {
+		t.Fatalf("Sample(ppid=%d) returned no processes", root)
+	}
+	var sawRoot, sawSelf bool
+	self := os.Getpid()
+	for _, p := range snap.Processes {
+		if p.IsRoot {
+			if p.PID != root {
+				t.Errorf("root marked on pid %d, want %d", p.PID, root)
+			}
+			sawRoot = true
+		}
+		if p.PID == self {
+			sawSelf = true
+			if p.Cmdline == "" {
+				t.Error("self process has empty cmdline")
+			}
+		}
+	}
+	if !sawRoot {
+		t.Error("root process not present / not marked")
+	}
+	if !sawSelf {
+		t.Errorf("this process (pid %d) not found under root %d", self, root)
 	}
 }
