@@ -325,7 +325,8 @@ function renderPromptWithImages(text: string, sessionId: string): React.ReactNod
           key={`img${i}`}
           src={buildUploadedAttachmentUrl(sessionId, storedName)}
           alt="attached"
-          style={{ display: "block", maxWidth: "100%", maxHeight: 300, borderRadius: 6, marginTop: parts.length > 0 ? 8 : 0 }}
+          data-cm-image="1"
+          style={{ display: "block", maxWidth: "100%", maxHeight: 300, borderRadius: 6, marginTop: parts.length > 0 ? 8 : 0, cursor: "zoom-in" }}
         />
       );
     } else {
@@ -335,6 +336,87 @@ function renderPromptWithImages(text: string, sessionId: string): React.ReactNod
   }
   flushText(lines.length);
   return <>{parts}</>;
+}
+
+// Lightbox is a full-screen image viewer with album-style prev/next navigation
+// across every image in the conversation. Backdrop/× closes; ←/→ (and the on-
+// screen arrows) step between images and stop at the ends; Esc closes. Rendered
+// through a portal so pane transforms/overflow can't clip or stack over it.
+function Lightbox({ images, index, onClose, onIndex }: {
+  images: string[];
+  index: number;
+  onClose: () => void;
+  onIndex: (i: number) => void;
+}) {
+  const hasPrev = index > 0;
+  const hasNext = index < images.length - 1;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
+      else if (e.key === "ArrowRight" && index < images.length - 1) onIndex(index + 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [index, images.length, onClose, onIndex]);
+
+  const arrow = (side: "left" | "right"): React.CSSProperties => ({
+    position: "absolute", [side]: 12, top: "50%", transform: "translateY(-50%)",
+    width: 44, height: 44, borderRadius: "50%", border: "none",
+    background: "rgba(0,0,0,0.5)", color: "#fff", fontSize: 26, lineHeight: "44px",
+    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+  });
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 9999,
+        background: "rgba(0,0,0,0.85)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      <button
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
+        title="Close (Esc)"
+        style={{
+          position: "absolute", top: 14, right: 16, width: 36, height: 36,
+          borderRadius: "50%", border: "none", background: "rgba(0,0,0,0.5)",
+          color: "#fff", fontSize: 22, lineHeight: "36px", cursor: "pointer",
+        }}
+      >×</button>
+
+      {images.length > 1 && (
+        <div style={{
+          position: "absolute", top: 18, left: "50%", transform: "translateX(-50%)",
+          color: "#fff", fontSize: 13, fontWeight: 600, background: "rgba(0,0,0,0.4)",
+          padding: "3px 10px", borderRadius: 12,
+        }}>{index + 1} / {images.length}</div>
+      )}
+
+      {hasPrev && (
+        <button title="Previous (←)" style={arrow("left")}
+          onClick={(e) => { e.stopPropagation(); onIndex(index - 1); }}>‹</button>
+      )}
+
+      <img
+        src={images[index]}
+        alt="attachment"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: "92vw", maxHeight: "92vh", objectFit: "contain",
+          borderRadius: 4, boxShadow: "0 8px 40px rgba(0,0,0,0.6)",
+        }}
+      />
+
+      {hasNext && (
+        <button title="Next (→)" style={arrow("right")}
+          onClick={(e) => { e.stopPropagation(); onIndex(index + 1); }}>›</button>
+      )}
+    </div>,
+    document.body,
+  );
 }
 
 function UserBubble({ text, ts, sessionId, onRewind }: { text: string; ts?: string; sessionId?: string; onRewind?: () => void }) {
@@ -4194,6 +4276,24 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const historyButtonRef = useRef<HTMLButtonElement>(null);
   const paneContainerRef = useRef<HTMLDivElement>(null);
+
+  // Album lightbox: clicking any conversation image opens a full-screen viewer
+  // that can page left/right through every image in the scroll area. We gather
+  // the album from the DOM at click time (no virtualization here, so all images
+  // are present and in render order) rather than threading a list through the
+  // message renderers.
+  const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null);
+  const handleConvImageClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (!(target instanceof HTMLImageElement) || !target.matches("[data-cm-image]")) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const imgs = Array.from(container.querySelectorAll<HTMLImageElement>("img[data-cm-image]"));
+    const idx = imgs.indexOf(target);
+    if (idx < 0) return;
+    setLightbox({ images: imgs.map((im) => im.currentSrc || im.src), index: idx });
+  }, []);
+
   // Track the chat pane's height so the pinned AUQ can be capped at half of it.
   useEffect(() => {
     const el = paneContainerRef.current;
@@ -5337,6 +5437,14 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
           pointerEvents: "none", zIndex: 100,
         }}>{lostToast}</div>
       )}
+      {lightbox && (
+        <Lightbox
+          images={lightbox.images}
+          index={lightbox.index}
+          onClose={() => setLightbox(null)}
+          onIndex={(i) => setLightbox((l) => (l ? { ...l, index: i } : l))}
+        />
+      )}
       {/* Load more banner */}
       {canLoadMore && (
         <div style={{
@@ -5363,6 +5471,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
       <div
         ref={scrollRef}
         onScroll={handleScroll}
+        onClick={handleConvImageClick}
         style={{ flex: 1, overflowY: "auto", paddingTop: 8, paddingBottom: 8, minHeight: 0 }}
       >
         {displayEntries.length === 0 && optimisticMsgs.length === 0 ? (
