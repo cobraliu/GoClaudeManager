@@ -4422,12 +4422,35 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
       const blocks = getBlocks(m.message.content as RawContentBlock[] | string);
       for (const b of blocks) {
         if (b.type === "tool_use" && b.name === "AskUserQuestion" && b.id && !toolResults.has(b.id)) {
-          return true;
+          // Block the composer ONLY for an AUQ that is actually shown as a
+          // widget — the same conditions the currentAuq→stickyAuq display path
+          // uses: a renderable question AND not dismissed. Otherwise the
+          // composer can stay disabled with no widget to answer, deadlocking
+          // the chat. That happens when the user dismissed the question (the
+          // dismissal is persisted, so it survives reloads) or when a process
+          // that exited mid-ask left an AskUserQuestion with empty/malformed
+          // `questions`. In both cases there is nothing on screen to respond to.
+          const inp = b.input as Record<string, unknown>;
+          const qs = Array.isArray(inp?.questions) ? inp.questions as AskQuestion[] : [];
+          if (qs.length > 0 && qs[0].question &&
+              !_isAuqBlockDismissed(sessionId, b.id) &&
+              !_isAuqRecentlyDismissed(sessionId, qs[0].question)) {
+            return true;
+          }
         }
       }
     }
     return false;
-  }, [messages, toolResults]);
+  }, [messages, toolResults, sessionId]);
+
+  // The composer is blocked while an AUQ needs handling. Two independent
+  // reasons: (1) isWaitingForAuq — the LIVE backend signal that Claude's TUI is
+  // showing the question dialog right now (Ink would eat keystrokes), which
+  // holds even if the web widget was dismissed; (2) hasUnansweredAuq — an
+  // answerable widget is on screen. It is deliberately NOT blocked when neither
+  // holds: a dismissed AUQ whose Claude process has since exited leaves no live
+  // dialog and no widget, so the chat must accept input again (the deadlock bug).
+  const auqBlocksComposer = isWaitingForAuq || hasUnansweredAuq;
 
   // ── Pinned (sticky) AUQ ──────────────────────────────────────────────────
   // Compaction rewrites JSONL and can briefly empty both AUQ sources
@@ -5225,7 +5248,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
     // still send so Claude has something to analyze.
     if (!textPart && pendingAttachments.length === 0) return;
     if (!wsRef.current || wsStatus !== "connected") return;
-    if (hasUnansweredAuq) return;  // Ink would eat the keystrokes — see hasUnansweredAuq comment.
+    if (auqBlocksComposer) return;  // Ink would eat the keystrokes — see auqBlocksComposer comment.
     // wsStatus is a React state set from onClose, so it lags real readyState
     // by a render. Without this check, a silently-closed WS lets us create
     // the optimistic bubble, clear the input, then drop the WS send — the
@@ -5251,7 +5274,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
     wsRef.current.sendPrompt(text);
     stickToBottom.current = true;
     requestAnimationFrame(() => scrollToBottom(false));
-  }, [input, wsStatus, hasUnansweredAuq, scrollToBottom, pendingAttachments, sessionId]);
+  }, [input, wsStatus, auqBlocksComposer, scrollToBottom, pendingAttachments, sessionId]);
 
   const stopResponse = useCallback(() => {
     if (!wsRef.current) return;
@@ -5346,7 +5369,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
   useEffect(() => { registerLostRef.current = registerLost; }, [registerLost]);
 
   const resendLostMsg = useCallback((lostId: string, text: string) => {
-    if (hasUnansweredAuq) { showTransientToast("请先回答上方的问题，再重发消息"); return; }
+    if (auqBlocksComposer) { showTransientToast("请先回答上方的问题，再重发消息"); return; }
     // Weak-network reconnect window: the WS isn't OPEN, so sendPrompt would be
     // silently dropped. Tell the user instead of leaving the failed bubble
     // unchanged (which reads as "resend did nothing").
@@ -5375,7 +5398,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
     }
     stickToBottom.current = true;
     requestAnimationFrame(() => scrollToBottom(false));
-  }, [hasUnansweredAuq, scrollToBottom, showTransientToast, sessionId]);
+  }, [auqBlocksComposer, scrollToBottom, showTransientToast, sessionId]);
 
   const dismissLostMsg = useCallback((lostId: string) => {
     setServerLost((prev) => { const n = new Map(prev); n.delete(lostId); return n; });
@@ -5983,7 +6006,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={
-              hasUnansweredAuq
+              auqBlocksComposer
                 ? "Answer the question above before sending — typing is allowed"
                 : wsStatus === "connected" ? "Type a prompt… (Ctrl+Enter to send)" : wsLabel
             }
@@ -6002,7 +6025,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
             const sendDisabled =
               (!input.trim() && pendingAttachments.length === 0) ||
               wsStatus !== "connected" ||
-              hasUnansweredAuq;
+              auqBlocksComposer;
             const uploadDisabled = wsStatus !== "connected" || isUploadingAttachment;
             // PC: 32×32 paired buttons. Side-by-side when textarea is short;
             // stack vertically (attachment above send) once the textarea is
@@ -6069,7 +6092,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
                     }}
                     onMouseEnter={(e) => { if (!sendDisabled) e.currentTarget.style.background = "#2ea043"; }}
                     onMouseLeave={(e) => { if (!sendDisabled) e.currentTarget.style.background = "#238636"; }}
-                    title={hasUnansweredAuq ? "Answer the question above first" : "Send (Ctrl+Enter)"}
+                    title={auqBlocksComposer ? "Answer the question above first" : "Send (Ctrl+Enter)"}
                   >↑</button>
                 </div>
                 <span style={{ fontSize: 9, color: wsColor }}>{wsLabel}</span>
