@@ -1761,7 +1761,7 @@ function fixDocxBulletGlyphs(host: HTMLElement) {
   });
 }
 
-function DocxViewer({ sessionId, path }: { sessionId: string; path: string }) {
+export function DocxViewer({ sessionId, path }: { sessionId: string; path: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1811,7 +1811,7 @@ function DocxViewer({ sessionId, path }: { sessionId: string; path: string }) {
 
 interface XlsxSheet { name: string; csv: string; }
 
-function XlsxViewer({ sessionId, path }: { sessionId: string; path: string }) {
+export function XlsxViewer({ sessionId, path }: { sessionId: string; path: string }) {
   const [sheets, setSheets] = useState<XlsxSheet[]>([]);
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(true);

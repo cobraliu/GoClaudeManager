@@ -13,7 +13,7 @@ import {
   type ChangedFile, type ChangedFilesWarning, type DirInfoResponse, type FileData, type FileEntry,
   type GitLogEntry,
 } from "../api/sessionApi";
-import { SqliteViewer, ColumnarViewer, CsvViewer, ArchiveViewer, JsonlViewer, copyText, DirPicker } from "./FileEditorModal";
+import { SqliteViewer, ColumnarViewer, CsvViewer, ArchiveViewer, JsonlViewer, DocxViewer, XlsxViewer, copyText, DirPicker } from "./FileEditorModal";
 import { DownloadExclusionModal } from "./DownloadExclusionModal";
 import { CodeMirrorEditor, type CodeMirrorEditorHandle } from "./CodeMirrorEditor";
 import { GitPanel, CommitDetailModal } from "./GitPanel";
@@ -82,6 +82,13 @@ function isSqliteFile(name: string) { return SQLITE_EXTS.has(name.split(".").pop
 const COLUMNAR_EXTS = new Set(["parquet", "pq", "arrow", "feather", "ipc"]);
 function isColumnarFile(name: string) { return COLUMNAR_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
 function isPdfFile(name: string) { return name.split(".").pop()?.toLowerCase() === "pdf"; }
+// Office files get their own in-browser viewers (docx-preview / SheetJS). The
+// legacy binary .doc is absent on purpose: docx-preview only reads OOXML.
+const DOCX_EXTS = new Set(["docx"]);
+const XLSX_EXTS = new Set(["xlsx", "xlsm", "xls"]);
+function isDocxFile(name: string) { return DOCX_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
+function isXlsxFile(name: string) { return XLSX_EXTS.has(name.split(".").pop()?.toLowerCase() ?? ""); }
+function isOfficeFile(name: string) { return isDocxFile(name) || isXlsxFile(name); }
 function isHtmlFile(name: string) {
   const e = name.split(".").pop()?.toLowerCase() ?? "";
   return e === "html" || e === "htm";
@@ -1766,6 +1773,8 @@ function ViewerContent({
   const showImage = isImage(entry.name);
   const showVideo = isVideo(entry.name);
   const showAudio = isAudio(entry.name);
+  const showDocx = isDocxFile(entry.name);
+  const showXlsx = isXlsxFile(entry.name);
   const isMd = isMdFile(entry.name);
   const isHtml = isHtmlFile(entry.name);
   const isJsonl = isJsonlFile(entry.name);
@@ -1782,6 +1791,8 @@ function ViewerContent({
   if (showImage) return <ImageViewer sessionId={sessionId} path={entry.path} />;
   if (showVideo) return <VideoViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
   if (showAudio) return <AudioViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
+  if (showDocx) return <DocxViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
+  if (showXlsx) return <XlsxViewer key={entry.path} sessionId={sessionId} path={entry.path} />;
   if (fileLoading && !fileData) return <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)", fontSize: 12 }}>Loading…</div>;
   if (showHtml) return <HtmlViewer key={fileData!.path + ":html"} sessionId={sessionId} path={fileData!.path} initialContent={fileData!.content} />;
   if (showJsonlTable) return <JsonlViewer key={fileData!.path + ":jsonl"} content={fileData!.content} />;
@@ -1854,7 +1865,7 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
 
   useEffect(() => {
     const n = path.split("/").pop() ?? path;
-    const metaOnly = isArchiveFile(n) || isSqliteFile(n) || isColumnarFile(n) || isPdfFile(n) || isImage(n) || isMedia(n);
+    const metaOnly = isArchiveFile(n) || isSqliteFile(n) || isColumnarFile(n) || isPdfFile(n) || isImage(n) || isMedia(n) || isOfficeFile(n);
     let mounted = true;
     setFileData(null);
     setFileLoading(true);
@@ -2644,7 +2655,7 @@ export function CodePane({
   }, [toolForm, selectedEntry]);
 
   const loadFile = useCallback(async (entry: FileEntry, scroll = false) => {
-    if (isImage(entry.name) || isMedia(entry.name) || entry.is_sqlite || isColumnarFile(entry.name) || isPdfFile(entry.name) || entry.is_archive) {
+    if (isImage(entry.name) || isMedia(entry.name) || entry.is_sqlite || isColumnarFile(entry.name) || isPdfFile(entry.name) || isOfficeFile(entry.name) || entry.is_archive) {
       setFileData(null); setSelectedEntry(entry); setScrollToFirst(false); return;
     }
     setFileLoading(true); setScrollToFirst(scroll);
