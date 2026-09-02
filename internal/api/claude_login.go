@@ -27,6 +27,8 @@ import (
 	"encoding/json"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/loki/goclaudemanager/internal/tmux"
 )
 
 const claudeLoginSession = "claude-login"
@@ -104,7 +106,7 @@ func readCredsExpiresAt() int64 {
 }
 
 type loginResult struct {
-	State   string `json:"state"`   // idle|starting|awaiting_code|success|error
+	State   string `json:"state"` // idle|starting|awaiting_code|success|error
 	URL     string `json:"url,omitempty"`
 	Message string `json:"message,omitempty"`
 	Screen  string `json:"screen,omitempty"`
@@ -162,9 +164,16 @@ func claudeLoginStart(d Deps, w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "cannot start login session: "+err.Error())
 			return
 		}
-		// Let claude boot, then dismiss the trust/onboarding dialog with Enter.
+		// Let claude boot, then clear whatever greets us. The workspace-trust
+		// dialog needs its option picked — since Claude Code 2.1.258 a bare
+		// Enter there means "No, exit" — while the onboarding screens still
+		// advance on Enter.
 		time.Sleep(2500 * time.Millisecond)
-		d.sendEnter()
+		if tmux.IsTrustDialog(d.captureLogin()) {
+			d.Tmux.SelectTrustYes(claudeLoginSession)
+		} else {
+			d.sendEnter()
+		}
 		time.Sleep(800 * time.Millisecond)
 	}
 

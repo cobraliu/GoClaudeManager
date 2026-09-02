@@ -79,12 +79,12 @@ func TestGetDescendantsProcSmoke(t *testing.T) {
 
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{
-		"":               "''",
-		"plain":          "plain",
-		"a/b-c.d":        "a/b-c.d",
-		"has space":      "'has space'",
-		"it's":           `'it'"'"'s'`,
-		"ANTHROPIC=x y":  "'ANTHROPIC=x y'",
+		"":              "''",
+		"plain":         "plain",
+		"a/b-c.d":       "a/b-c.d",
+		"has space":     "'has space'",
+		"it's":          `'it'"'"'s'`,
+		"ANTHROPIC=x y": "'ANTHROPIC=x y'",
 	}
 	for in, want := range cases {
 		if got := shellQuote(in); got != want {
@@ -240,5 +240,52 @@ func TestJoinNonEmpty(t *testing.T) {
 func TestPidStr(t *testing.T) {
 	if strconv.Itoa(987) != "987" {
 		t.Fatal("unexpected")
+	}
+}
+
+// Claude Code 2.1.258 renders the trust dialog with "No, exit" first and the
+// selection cursor on it, so the choice can only be made by counting rows
+// rather than assuming the default is safe.
+const trustScreen2_1_258 = ` Accessing workspace:
+
+ /tmp/probe
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel`
+
+// Older builds put the trust option first with the cursor already on it.
+const trustScreenYesFirst = ` Accessing workspace:
+
+ ❯ Yes, I trust this folder
+   No, exit`
+
+func TestTrustDialogYesPresses(t *testing.T) {
+	cases := []struct {
+		name    string
+		screen  string
+		presses int
+		ok      bool
+	}{
+		{"cursor on No above Yes", trustScreen2_1_258, 1, true},
+		{"cursor already on Yes", trustScreenYesFirst, 0, true},
+		{"cursor on No below Yes", " ❯ No, exit\n   Yes, I trust this folder", 1, true},
+		{"cursor below Yes", "   Yes, I trust this folder\n ❯ No, exit", -1, true},
+		{"no cursor rendered", " Yes, I trust this folder", 0, false},
+		{"no trust option", " ❯ No, exit\n   Something else", 0, false},
+		{"empty", "", 0, false},
+	}
+	for _, tc := range cases {
+		presses, ok := trustDialogYesPresses(tc.screen)
+		if ok != tc.ok || presses != tc.presses {
+			t.Errorf("%s: got (%d, %v), want (%d, %v)", tc.name, presses, ok, tc.presses, tc.ok)
+		}
 	}
 }

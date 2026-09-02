@@ -33,9 +33,46 @@ import (
 // workspace-trust dialog. Multiple candidates are kept for version-drift
 // tolerance — any one match is enough. (Port of _TRUST_DIALOG_PATTERNS.)
 var TrustDialogPatterns = []string{
-	"Yes, I trust this folder",
+	trustYesOption,
 	"Accessing workspace",
 }
+
+// trustYesOption is the dialog row that grants access, and trustCursor is the
+// marker Claude draws on the currently selected row.
+const (
+	trustYesOption = "Yes, I trust this folder"
+	trustCursor    = "\u276f"
+
+	// Bounds for walking the cursor onto the trust option.
+	trustSelectAttempts = 12
+	trustSelectStep     = 250 * time.Millisecond
+)
+
+// trustDialogYesPresses reports how many rows the selection cursor must move
+// DOWN to land on the trust option (negative = up), and whether the screen
+// showed both markers. The rows cannot be assumed: Claude Code 2.1.258 lists
+// "No, exit" first with the cursor on it, where older builds listed the trust
+// option first — so a bare Enter, which used to accept, now exits and leaves
+// the session dead.
+func trustDialogYesPresses(screen string) (int, bool) {
+	cursor, yes := -1, -1
+	for i, line := range strings.Split(screen, "\n") {
+		if strings.Contains(line, trustCursor) {
+			cursor = i
+		}
+		if strings.Contains(line, trustYesOption) {
+			yes = i
+		}
+	}
+	if cursor < 0 || yes < 0 {
+		return 0, false
+	}
+	return yes - cursor, true
+}
+
+// IsTrustDialog is the exported form of looksLikeTrustDialog, for callers that
+// drive the Claude TUI from another package.
+func IsTrustDialog(screen string) bool { return looksLikeTrustDialog(screen) }
 
 // looksLikeTrustDialog reports whether the captured screen contains the
 // Claude workspace-trust dialog. (Port of _looks_like_trust_dialog.)
@@ -604,10 +641,41 @@ func (c *Client) ResizeWindow(sessionName string, cols, rows int) error {
 	return err
 }
 
+// SelectTrustYes moves the trust dialog's selection onto "Yes, I trust this
+// folder" and confirms it, reporting whether the choice was verified. The
+// cursor is re-read after the move and Enter is only sent once it sits on that
+// row: a mis-aimed Enter picks "No, exit", which quits Claude and leaves the
+// session dead.
+func (c *Client) SelectTrustYes(sessionName string) bool {
+	for attempt := 0; attempt < trustSelectAttempts; attempt++ {
+		presses, ok := trustDialogYesPresses(c.CaptureVisibleScreen(sessionName))
+		if !ok {
+			return false
+		}
+		if presses == 0 {
+			_, err := c.run("send-keys", "-t", sessionName, "Enter")
+			return err == nil
+		}
+		key := "Down"
+		if presses < 0 {
+			key = "Up"
+		}
+		// One step per pass, re-reading the screen in between. Two reasons the
+		// move cannot be batched: keystrokes sent while the TUI is still
+		// starting are dropped, and the option list wraps, so a burst of
+		// presses can sail straight past the row it was aiming for.
+		if _, err := c.run("send-keys", "-t", sessionName, key); err != nil {
+			return false
+		}
+		time.Sleep(trustSelectStep)
+	}
+	return false
+}
+
 // autoAcceptTrustDialog polls the TUI after startup; if Claude's
-// workspace-trust dialog shows, it presses Enter to accept the default first
-// option. Returns silently if no dialog appears within timeout. Never returns
-// an error — failure here must not affect session creation.
+// workspace-trust dialog shows, it selects the trust option and confirms.
+// Returns silently if no dialog appears within timeout. Never returns an
+// error — failure here must not affect session creation.
 // (Port of _auto_accept_trust_dialog; runs in a goroutine.)
 func (c *Client) autoAcceptTrustDialog(sessionName string, timeout time.Duration) {
 	time.Sleep(800 * time.Millisecond) // let the TUI render before first scan
@@ -617,8 +685,13 @@ func (c *Client) autoAcceptTrustDialog(sessionName string, timeout time.Duration
 		screen := c.CaptureVisibleScreen(sessionName)
 		isTrust := looksLikeTrustDialog(screen)
 		if isTrust && !sent {
-			if _, err := c.run("send-keys", "-t", sessionName, "Enter"); err != nil {
-				return
+			if !c.SelectTrustYes(sessionName) {
+				// Cursor unreadable (mid-redraw, or a layout this build does
+				// not recognise). Leave the dialog standing rather than guess:
+				// the user can still answer it from the web terminal, whereas a
+				// blind Enter can land on "No, exit" and kill the session.
+				time.Sleep(400 * time.Millisecond)
+				continue
 			}
 			sent = true
 			slog.Info("auto-accepted trust dialog", "session", sessionName)
