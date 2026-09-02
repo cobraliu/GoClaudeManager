@@ -20,6 +20,7 @@ import {
   readFile,
   writeFile,
   fetchRawFileBlob,
+  fetchRawFileBytes,
   mediaFileUrl,
   downloadFile,
   getDirInfo,
@@ -60,11 +61,16 @@ interface NodeState {
 }
 
 
-type FileKind = "edit" | "code" | "csv" | "jsonl" | "markdown" | "sqlite" | "pdf" | "image" | "audio" | "video";
+type FileKind = "edit" | "code" | "csv" | "jsonl" | "markdown" | "sqlite" | "pdf" | "image" | "audio" | "video" | "docx" | "xlsx";
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "tiff", "tif", "ico", "svg", "heic", "heif"]);
 const VIDEO_EXTS = new Set(["mp4", "webm", "ogv", "mov", "m4v", "mkv"]);
 const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "oga", "m4a", "aac", "flac", "opus"]);
+// Office formats rendered in-browser (see DocxViewer / XlsxViewer). The legacy
+// binary .doc is deliberately absent: docx-preview only reads OOXML. SheetJS
+// does read the legacy BIFF .xls, so that one is included.
+const DOCX_EXTS = new Set(["docx"]);
+const XLSX_EXTS = new Set(["xlsx", "xlsm", "xls"]);
 
 function getExt(path: string): string {
   return path.split(".").pop()?.toLowerCase() || "";
@@ -92,11 +98,20 @@ function getFileKind(path: string, isSqlite: boolean): FileKind {
   if (IMAGE_EXTS.has(ext)) return "image";
   if (VIDEO_EXTS.has(ext)) return "video";
   if (AUDIO_EXTS.has(ext)) return "audio";
+  if (DOCX_EXTS.has(ext)) return "docx";
+  if (XLSX_EXTS.has(ext)) return "xlsx";
   if (ext === "csv" || ext === "tsv") return "csv";
   if (ext === "jsonl") return "jsonl";
   if (ext === "md" || ext === "markdown") return "markdown";
   if (CODE_EXTS.has(ext)) return "code";
   return "edit";
+}
+
+// Kinds whose bytes never round-trip through the text editor: a dedicated
+// viewer owns the rendering, so Edit / Copy / Save don't apply to them.
+function isBinaryKind(kind: FileKind): boolean {
+  return kind === "pdf" || kind === "image" || kind === "video" || kind === "audio"
+    || kind === "docx" || kind === "xlsx";
 }
 
 interface OpenFile {
@@ -1713,6 +1728,161 @@ function AudioViewer({ sessionId, path }: { sessionId: string; path: string }) {
   );
 }
 
+// ── Office Viewers (docx / xlsx) ─────────────────────────────────────────────
+// Both formats are zip containers, so fs/read rejects them as binary — these
+// viewers fetch the raw bytes and parse them in the browser instead. The two
+// parsers are pulled in with a dynamic import so their code only reaches
+// clients that actually open an Office file.
+
+// Word stores list bullets as a Private Use Area codepoint drawn with the
+// Symbol/Wingdings font, and docx-preview passes that through verbatim into the
+// numbering stylesheet it injects. Those fonts only cover that range on
+// Windows, so every bullet renders as an empty box on macOS and Linux. Rewrite
+// PUA characters to their real Unicode equivalents and let them inherit the
+// document font. Only declaration blocks that actually contain a PUA character
+// are touched, so genuine Symbol-font text elsewhere is left alone.
+const DOCX_PUA_GLYPHS: Record<string, string> = {
+  "\uF0B7": "\u2022", "\uF06C": "\u25cf", "\uF0A7": "\u25aa", "\uF0A8": "\u25ab",
+  "\uF075": "\u25c6", "\uF0D8": "\u27a2", "\uF0FC": "\u2714", "\uF0FE": "\u2751",
+  "\uF02D": "\u2013", "\uF06E": "\u25a0", "\uF0A1": "\u274d",
+};
+
+function fixDocxBulletGlyphs(host: HTMLElement) {
+  host.querySelectorAll("style").forEach((el) => {
+    const css = el.textContent ?? "";
+    if (!/[\uF000-\uF0FF]/.test(css)) return;
+    el.textContent = css.replace(/\{([^}]*)\}/g, (block, body: string) => {
+      if (!/[\uF000-\uF0FF]/.test(body)) return block;
+      const fixed = body
+        .replace(/[\uF000-\uF0FF]/g, (ch) => DOCX_PUA_GLYPHS[ch] ?? "\u2022")
+        .replace(/font-family:\s*[^;]+;?/gi, "font-family: inherit;");
+      return `{${fixed}}`;
+    });
+  });
+}
+
+function DocxViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    (async () => {
+      const [{ renderAsync }, buf] = await Promise.all([
+        import("docx-preview"),
+        fetchRawFileBytes(sessionId, path),
+      ]);
+      if (cancelled || !hostRef.current) return;
+      hostRef.current.innerHTML = "";
+      // docx-preview injects its own stylesheet into the host element, so the
+      // Word styling stays scoped to this container instead of leaking out.
+      await renderAsync(buf, hostRef.current, undefined, {
+        className: "docx",
+        inWrapper: true,
+        breakPages: true,
+        useBase64URL: true,
+      });
+      fixDocxBulletGlyphs(hostRef.current);
+      if (!cancelled) setLoading(false);
+    })().catch((e) => {
+      if (!cancelled) { setError(String(e)); setLoading(false); }
+    });
+    return () => { cancelled = true; };
+  }, [sessionId, path]);
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--bg-deep)" }}>
+      {error && (
+        <div style={{ padding: 24, color: "var(--accent-red)", fontSize: 13 }}>
+          Failed to render document: {error}
+          <div style={{ color: "var(--text-muted)", marginTop: 6 }}>Use the download button above to open the original file.</div>
+        </div>
+      )}
+      {loading && !error && (
+        <div style={{ padding: 24, color: "var(--text-muted)", fontSize: 13 }}>Rendering document…</div>
+      )}
+      <div ref={hostRef} style={{ display: error ? "none" : undefined }} />
+    </div>
+  );
+}
+
+interface XlsxSheet { name: string; csv: string; }
+
+function XlsxViewer({ sessionId, path }: { sessionId: string; path: string }) {
+  const [sheets, setSheets] = useState<XlsxSheet[]>([]);
+  const [active, setActive] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setActive(0);
+    (async () => {
+      const [XLSX, buf] = await Promise.all([
+        import("xlsx"),
+        fetchRawFileBytes(sessionId, path),
+      ]);
+      if (cancelled) return;
+      const wb = XLSX.read(buf, { type: "array" });
+      // Each sheet becomes CSV text so the existing CsvViewer (sorting,
+      // paging, sticky header) renders it unchanged.
+      setSheets(wb.SheetNames.map((name) => ({
+        name,
+        csv: XLSX.utils.sheet_to_csv(wb.Sheets[name], { blankrows: false }),
+      })));
+      setLoading(false);
+    })().catch((e) => {
+      if (!cancelled) { setError(String(e)); setLoading(false); }
+    });
+    return () => { cancelled = true; };
+  }, [sessionId, path]);
+
+  if (error) return (
+    <div style={{ padding: 24, color: "var(--accent-red)", fontSize: 13 }}>
+      Failed to parse spreadsheet: {error}
+      <div style={{ color: "var(--text-muted)", marginTop: 6 }}>Use the download button above to open the original file.</div>
+    </div>
+  );
+  if (loading) return <div style={{ padding: 24, color: "var(--text-muted)", fontSize: 13 }}>Parsing spreadsheet…</div>;
+  if (sheets.length === 0) return <div style={{ padding: 24, color: "var(--text-muted)", fontSize: 13 }}>Workbook has no sheets</div>;
+
+  const sheet = sheets[Math.min(active, sheets.length - 1)];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+      {sheets.length > 1 && (
+        <div style={{ display: "flex", gap: 4, padding: "4px 8px", background: "var(--bg-surface)", borderBottom: "1px solid var(--border)", overflowX: "auto", flexShrink: 0 }}>
+          {sheets.map((s, i) => (
+            <button
+              key={s.name}
+              onClick={() => setActive(i)}
+              title={s.name}
+              style={{
+                background: i === active ? "var(--accent-blue)" : "var(--bg-hover)",
+                color: i === active ? "#fff" : "var(--text-secondary)",
+                fontSize: 11, padding: "3px 10px", whiteSpace: "nowrap", flexShrink: 0,
+              }}
+            >
+              {s.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {sheet.csv.trim() === "" ? (
+        <div style={{ padding: 24, color: "var(--text-muted)", fontSize: 13 }}>Empty sheet</div>
+      ) : (
+        // Remount per sheet so sort column and page reset on every switch.
+        <CsvViewer key={sheet.name} content={sheet.csv} delimiter="," />
+      )}
+    </div>
+  );
+}
+
 // ── Archive Viewer ───────────────────────────────────────────────────────────
 export function ArchiveViewer({ sessionId, path }: { sessionId: string; path: string }) {
   const [entries, setEntries] = useState<string[]>([]);
@@ -2230,6 +2400,15 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
         return;
       }
 
+      // Office files are binary containers — fs/read would 415 on them, so go
+      // straight to the viewer that fetches the raw bytes itself.
+      if (DOCX_EXTS.has(getExt(entry.name)) || XLSX_EXTS.has(getExt(entry.name))) {
+        const kind = DOCX_EXTS.has(getExt(entry.name)) ? "docx" : "xlsx";
+        setOpenFile({ path: entry.path, content: "", savedContent: "", kind, isSqlite: false, size: entry.size ?? undefined });
+        setViewMode("preview");
+        return;
+      }
+
       try {
         const res = await readFile(sessionId, entry.path);
         const kind = getFileKind(res.path, false);
@@ -2449,7 +2628,7 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
                 {viewMode === "preview" ? "Edit" : "Preview"}
               </button>
             )}
-            {openFile && !openFile.isSqlite && openFile.kind !== "pdf" && openFile.kind !== "image" && openFile.kind !== "video" && openFile.kind !== "audio" && (
+            {openFile && !openFile.isSqlite && !isBinaryKind(openFile.kind) && (
               <button
                 onClick={() => {
                   const text = previewContent ?? openFile.content;
@@ -2466,7 +2645,7 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
                 Copy
               </button>
             )}
-            {openFile && !openFile.isSqlite && openFile.kind !== "pdf" && openFile.kind !== "image" && openFile.kind !== "video" && openFile.kind !== "audio" && (
+            {openFile && !openFile.isSqlite && !isBinaryKind(openFile.kind) && (
               <button
                 onClick={handleSave}
                 disabled={!isModified || saving}
@@ -2844,6 +3023,10 @@ export function FileEditorModal({ sessionId, sessionCwd, onClose }: Props) {
                   <VideoViewer sessionId={sessionId} path={openFile.path} />
                 ) : openFile.kind === "audio" ? (
                   <AudioViewer sessionId={sessionId} path={openFile.path} />
+                ) : openFile.kind === "docx" ? (
+                  <DocxViewer sessionId={sessionId} path={openFile.path} />
+                ) : openFile.kind === "xlsx" ? (
+                  <XlsxViewer sessionId={sessionId} path={openFile.path} />
                 ) : previewContent !== null ? (
                   // Preview overlay (Format JSON / → YAML / → JSON)
                   (() => {

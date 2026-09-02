@@ -37,6 +37,7 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "cm6-graphql": "^0.2.1",
+    "docx-preview": "^0.4.0",
     "hash-wasm": "^4.12.0",
     "highlight.js": "^11.11.1",
     "js-yaml": "^4.1.1",
@@ -48,7 +49,8 @@
     "react-dom": "^18.3.1",
     "react-icons": "^5.6.0",
     "react-virtuoso": "^4.18.9",
-    "smol-toml": "^1.6.1"
+    "smol-toml": "^1.6.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

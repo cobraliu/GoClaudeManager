@@ -9,6 +9,7 @@ import {
   VscDatabase, VscLock, VscOutput, VscSettingsGear, VscKey, VscMarkdown,
   VscFileCode, VscNewFolder,
 } from "react-icons/vsc";
+import { FaFileWord, FaFileExcel } from "react-icons/fa";
 import type { IconType } from "react-icons";
 
 void SiMarkdown; // kept for parity; preferred VscMarkdown wins for md/markdown
@@ -68,6 +69,11 @@ const FILE_EXT: Record<string, IconSpec> = {
   sqlite:  { Icon: SiSqlite,    color: "#88B7E0" },
   sqlite3: { Icon: SiSqlite,    color: "#88B7E0" },
   pdf:   { Icon: VscFilePdf,    color: "#DC2626" },
+  doc:   { Icon: FaFileWord,    color: "#2B579A" },
+  docx:  { Icon: FaFileWord,    color: "#2B579A" },
+  xls:   { Icon: FaFileExcel,   color: "#217346" },
+  xlsx:  { Icon: FaFileExcel,   color: "#217346" },
+  xlsm:  { Icon: FaFileExcel,   color: "#217346" },
   zip:   { Icon: VscFileZip,    color: "var(--text-secondary)" },
   tar:   { Icon: VscFileZip,    color: "var(--text-secondary)" },
   gz:    { Icon: VscFileZip,    color: "var(--text-secondary)" },

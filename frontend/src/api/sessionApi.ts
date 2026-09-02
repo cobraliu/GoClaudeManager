@@ -804,6 +804,22 @@ export async function fetchRawFileBlob(
   return URL.createObjectURL(blob);
 }
 
+// Raw bytes of a file, for viewers that parse a binary container in-browser
+// (docx via docx-preview, xlsx via SheetJS) rather than handing a URL to the
+// DOM. Same fs/raw route as fetchRawFileBlob — only the decoding differs.
+export async function fetchRawFileBytes(
+  sessionId: string,
+  path: string
+): Promise<ArrayBuffer> {
+  const token = localStorage.getItem("token") || "";
+  const resp = await fetch(
+    apiPath(`/api/sessions/${sessionId}/fs/raw?path=${encodeURIComponent(path)}`),
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.arrayBuffer();
+}
+
 export async function downloadFile(sessionId: string, path: string): Promise<void> {
   const token = localStorage.getItem("token") || "";
   const resp = await fetch(
