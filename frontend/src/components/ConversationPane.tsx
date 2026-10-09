@@ -2183,7 +2183,7 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers, 
         {total > 1 && (
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
             {questions.map((_, i) => {
-              const done = selections[i].size > 0 || (customs[i]?.trim().length ?? 0) > 0;
+              const done = (selections[i]?.size ?? 0) > 0 || (customs[i]?.trim().length ?? 0) > 0;
               const active = i === step;
               return (
                 <button

@@ -1467,6 +1467,13 @@ export function FileSidePanel({
       <div style={{ overflowY: "auto", flex: 1, paddingTop: 4 }}>
         <div ref={sideBarRef} style={{ padding: "4px 10px 2px", fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: sideCollapse ? 4 : 8, minWidth: 0 }}>
           <span style={{ flexShrink: 0 }}>Files</span>
+          <button
+            onClick={() => setFilesRefreshKey(k => k + 1)}
+            title="Refresh file list"
+            style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+          >
+            ⟳
+          </button>
           <GitBranchPicker
             sessionId={sessionId}
             refreshKey={filesRefreshKey}
@@ -2926,7 +2933,7 @@ export function CodePane({
       // just toggle the form open/closed here.
       setToolForm(toolForm === "upload" ? null : "upload");
     } },
-    { key: "downloadCwd", label: dlLoading ? "Preparing zip…" : "Download cwd as zip", icon: "⤓📦", active: false, onClick: dlLoading ? () => {} : handleDownloadCwd },
+    { key: "downloadCwd", label: dlLoading ? "Preparing zip…" : "Download cwd as zip", icon: "⤓", active: false, onClick: dlLoading ? () => {} : handleDownloadCwd },
     { key: "showHidden",  label: showHidden ? "Hide dot-prefixed files" : "Show dot-prefixed files", icon: ".*", active: showHidden, onClick: () => setShowHidden(!showHidden) },
   ], [toolForm, dlLoading, handleDownloadCwd, showHidden, setShowHidden, pendingCreate, startCreateFromSelection]);
 
@@ -2950,6 +2957,13 @@ export function CodePane({
           {/* Row 1: Files label + branch picker + Pull + Git panel (Pull/Git adjacent, no gap) */}
           <div ref={toolbarRef} style={{ padding: "4px 6px 2px", display: "flex", alignItems: "center", gap: 3, flexShrink: 0, borderBottom: "1px solid var(--bg-hover)", minWidth: 0 }}>
             <span style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", paddingLeft: 4, flexShrink: 0 }}>Files</span>
+            <button
+              onClick={bumpFilesRefresh}
+              title="Refresh file list"
+              style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+            >
+              ⟳
+            </button>
             <GitBranchPicker
               sessionId={sessionId}
               refreshKey={filesRefreshKey}
