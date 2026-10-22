@@ -60,6 +60,14 @@ function getTextFromContent(content: RawContentBlock[] | string): string {
   return content.filter((b) => b.type === "text").map((b) => b.text || "").join("");
 }
 
+// Strip Claude CLI injected wrappers (<pasted_content>, <system-reminder>, etc.)
+// so the raw user text can match the optimistic bubble's text.
+const PASTED_RE = /^\s*<pasted_content[^>]*>\n?|\n?<\/pasted_content[^>]*>\s*$/g;
+const SYSREM_RE = /\n*<system-reminder>[\s\S]*?<\/system-reminder>\s*$/;
+function stripCliWrappers(text: string): string {
+  return text.replace(SYSREM_RE, "").replace(PASTED_RE, "").trim();
+}
+
 function getBlocks(content: RawContentBlock[] | string): RawContentBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return content || [];
@@ -4253,6 +4261,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
   // here. pendingLostRef protects a just-registered entry from being dropped by
   // a poll that predates the server seeing it (grace window).
   const [serverLost, setServerLost] = useState<Map<string, LostMessage>>(new Map());
+  const serverLostRef = useRef<Map<string, LostMessage>>(new Map());
   const pendingLostRef = useRef<Map<string, { lm: LostMessage; at: number }>>(new Map());
   const registerLostRef = useRef<(text: string, sentAt: number) => void>(() => {});
   const [newCompactUuids, setNewCompactUuids] = useState<Set<string>>(new Set());
@@ -4802,8 +4811,13 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
       // While a send is outstanding, force a full fetch (no token) so the
       // reconcile/"lost"-timeout pass below always has real data. Otherwise use
       // the change token so an idle poll can short-circuit on the server.
-      const tok = pendingOptimisticRef.current ? undefined : lastTokenRef.current;
-      const data = await getRawMessages(sessionId, currentTail, tok);
+      // Also widen the tail when optimistic bubbles are pending: a burst of rapid
+      // tool calls can push the user's message beyond the default LIVE_TAIL window,
+      // causing the reconcile to miss it and false-positive as "lost".
+      const hasPending = pendingOptimisticRef.current;
+      const tok = hasPending ? undefined : lastTokenRef.current;
+      const effectiveTail = hasPending ? Math.max(currentTail, 500) : currentTail;
+      const data = await getRawMessages(sessionId, effectiveTail, tok);
       // Session switched while this request was in flight: drop the response so
       // it can't corrupt the now-current session's state (a stale delta would
       // otherwise merge foreign entries / collapse the freshly-reset list).
@@ -4921,14 +4935,14 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
       for (const m of msgList) {
         let text: string | null = null;
         if (m.type === "user" && m.message) {
-          text = getTextFromContent(m.message.content as RawContentBlock[] | string).trim();
+          text = stripCliWrappers(getTextFromContent(m.message.content as RawContentBlock[] | string));
         } else if (m.type === "attachment") {
           const att = (m as unknown as Record<string, unknown>).attachment as Record<string, unknown> | undefined;
-          if (att?.type === "queued_command" && att.prompt) text = String(att.prompt).trim();
+          if (att?.type === "queued_command" && att.prompt) text = stripCliWrappers(String(att.prompt));
         } else if (m.type === "queue-operation") {
           // Claude CLI logs user input typed mid-response as queue-operation enqueue.
           const r = m as unknown as Record<string, unknown>;
-          if (r.operation === "enqueue" && typeof r.content === "string") text = r.content.trim();
+          if (r.operation === "enqueue" && typeof r.content === "string") text = stripCliWrappers(r.content);
         } else if (m.type === "system" && (m as unknown as Record<string, unknown>).subtype === "compact_boundary") {
           const tsParsed = m.timestamp ? Date.parse(m.timestamp) : NaN;
           if (!Number.isNaN(tsParsed)) compactBoundaryTs.push(tsParsed);
@@ -4950,6 +4964,20 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
           setInput("");
           inputDrafts.delete(sessionId);
           clearDraft(sessionId);
+        }
+      }
+      // Auto-heal: if a server-side "lost" message's text actually exists in
+      // the JSONL, the send succeeded despite the earlier timeout — dismiss the
+      // false positive so the red bubble disappears without manual intervention.
+      {
+        const lostMap = serverLostRef.current;
+        if (lostMap.size > 0) {
+          const realTexts = new Set(realUserEntries.map((e) => e.text));
+          for (const [id, lm] of lostMap) {
+            if (realTexts.has(lm.text.trim())) {
+              dismissLostMessage(sessionId, id).catch(() => {});
+            }
+          }
         }
       }
       setOptimisticMsgs((prev) => {
@@ -5238,6 +5266,7 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
     for (const lm of incoming) merged.set(lm.id, lm);
     for (const [id, v] of pendingLostRef.current) if (!merged.has(id)) merged.set(id, v.lm);
     setServerLost(merged);
+    serverLostRef.current = merged;
   }, [lostMessages]);
 
   // ── Input / control ───────────────────────────────────────────────────────

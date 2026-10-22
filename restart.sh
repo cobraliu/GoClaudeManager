@@ -41,7 +41,7 @@ WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-19099}"
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-19098}"
-PROXY_UPSTREAM="${PROXY_UPSTREAM:-http://127.0.0.1:7890}"
+PROXY_UPSTREAM="${PROXY_UPSTREAM:-http://127.0.0.1:8128}"
 
 # One-time migration seed from the legacy Python install. Override LEGACY_DB to
 # point elsewhere, or set it empty to disable seeding entirely.
