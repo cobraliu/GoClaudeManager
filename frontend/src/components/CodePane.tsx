@@ -18,6 +18,7 @@ import { DownloadExclusionModal } from "./DownloadExclusionModal";
 import { CodeMirrorEditor, type CodeMirrorEditorHandle } from "./CodeMirrorEditor";
 import { GitPanel, CommitDetailModal } from "./GitPanel";
 import { GitBranchPicker, GitPullButton } from "./GitBranchPicker";
+import { WorktreePanel } from "./WorktreePanel";
 import { ConfigFormatToggle } from "./ConfigFormatToggle";
 import { ConfigCheckButton } from "./ConfigCheckButton";
 import { ConfigValidationBanner } from "./ConfigValidationBanner";
@@ -2560,7 +2561,7 @@ export function CodePane({
   const [selectedFromChanges, setSelectedFromChanges] = useState(true);
 
   // ── Toolbar / action state (ported from FileEditorModal) ───────────────────
-  type ToolForm = null | "search" | "upload" | "historySearch";
+  type ToolForm = null | "search" | "upload" | "historySearch" | "worktrees";
   const [toolForm, setToolForm] = useState<ToolForm>(null);
   const [toolError, setToolError] = useState("");
   const [toolBusy, setToolBusy] = useState(false);
@@ -2934,6 +2935,7 @@ export function CodePane({
       setToolForm(toolForm === "upload" ? null : "upload");
     } },
     { key: "downloadCwd", label: dlLoading ? "Preparing zip…" : "Download cwd as zip", icon: "⤓", active: false, onClick: dlLoading ? () => {} : handleDownloadCwd },
+    { key: "worktrees", label: "Git worktrees (parallel branches)", icon: "⑂", active: toolForm === "worktrees", onClick: () => setToolForm(toolForm === "worktrees" ? null : "worktrees") },
     { key: "showHidden",  label: showHidden ? "Hide dot-prefixed files" : "Show dot-prefixed files", icon: ".*", active: showHidden, onClick: () => setShowHidden(!showHidden) },
   ], [toolForm, dlLoading, handleDownloadCwd, showHidden, setShowHidden, pendingCreate, startCreateFromSelection]);
 
@@ -2985,8 +2987,14 @@ export function CodePane({
             ))}
           </div>
 
+          {toolForm === "worktrees" && (
+            <div style={{ borderBottom: "1px solid var(--bg-hover)", maxHeight: "55%", overflowY: "auto", flexShrink: 0 }}>
+              <WorktreePanel sessionId={sessionId} compact />
+            </div>
+          )}
+
           {/* Inline forms */}
-          {toolForm && (
+          {toolForm && toolForm !== "worktrees" && (
             <div style={{ padding: "6px 8px 8px", borderBottom: "1px solid var(--bg-hover)", background: "var(--bg-base)", flexShrink: 0 }}>
               {toolForm === "search" && (
                 <input

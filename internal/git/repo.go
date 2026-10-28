@@ -14,8 +14,10 @@ import (
 
 // open opens the repository whose working tree contains dir, walking up to find
 // the .git directory (matching `git rev-parse --is-inside-work-tree`).
+// EnableDotGitCommonDir makes linked worktrees (whose .git is a file pointing
+// into the main repo) resolve refs and objects from the shared common dir.
 func (s *Service) open(dir string) (*gogit.Repository, error) {
-	return gogit.PlainOpenWithOptions(dir, &gogit.PlainOpenOptions{DetectDotGit: true})
+	return gogit.PlainOpenWithOptions(dir, &gogit.PlainOpenOptions{DetectDotGit: true, EnableDotGitCommonDir: true})
 }
 
 // IsRepo reports whether cwd is inside a git work tree. Uses go-git's directory

@@ -116,6 +116,7 @@ import {
   type ShareTheme,
   type ShareType,
   type FileAccessSpec,
+  OPEN_SESSION_EVENT,
 } from "../api/sessionApi";
 import { ShareFileSelector } from "../components/ShareFileSelector";
 import {
@@ -157,6 +158,7 @@ import { MemoryPanel } from "../components/MemoryPanel";
 import { downloadConversationHtml } from "../lib/exportChat";
 import { DownloadExclusionModal } from "../components/DownloadExclusionModal";
 import { GitGraph } from "../components/GitGraph";
+import { WorktreePanel } from "../components/WorktreePanel";
 import { FileIcon, NewFolderIcon } from "../components/FileIcon";
 import { HtmlViewer } from "../components/HtmlViewer";
 import CodexChatInput from "../components/CodexChatInput";
@@ -296,7 +298,10 @@ function CreateModal({
   }, []);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [useWorktree, setUseWorktree] = useState(false);
+  const [worktreeBranch, setWorktreeBranch] = useState("");
   const prefix = `${workspaceBase}/${username}/`;
+  const wantWorktree = useWorktree && !!suffix.trim();
 
   const submit = async () => {
     if (!project.trim()) return;
@@ -309,6 +314,7 @@ function CreateModal({
         tool,
         ...(tool === "codex" ? { codex_transport: codexTransport } : {}),
         ...(tool === "claude" && claudeTransport === "sdk" ? { transport: "sdk" as const } : {}),
+        ...(wantWorktree && worktreeBranch.trim() ? { worktree: { branch: worktreeBranch.trim() } } : {}),
       };
       onCreate(await createSession(params));
     } catch (e) { setErr(String(e)); } finally { setLoading(false); }
@@ -391,8 +397,22 @@ function CreateModal({
           <div style={{ fontSize: 11, color: "var(--text-faint)", fontFamily: "monospace", marginBottom: 4 }}>{prefix}</div>
           <input placeholder="subdir" value={suffix} onChange={(e) => setSuffix(e.target.value)} style={inp} />
         </div>
+        {suffix.trim() && (
+          <div>
+            <label style={{ fontSize: 13, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} />
+              在新 git worktree 中运行
+            </label>
+            {useWorktree && (
+              <>
+                <input placeholder="新分支名, e.g. feat/login" value={worktreeBranch} onChange={(e) => setWorktreeBranch(e.target.value)} style={{ ...inp, marginTop: 6 }} />
+                <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 3 }}>目录须是 git 仓库；新分支从当前 HEAD 拉出，放在 &lt;repo&gt;.worktrees/ 下。</div>
+              </>
+            )}
+          </div>
+        )}
         {err && <div style={{ fontSize: 12, color: "var(--accent-red)" }}>{err}</div>}
-        <button onClick={submit} disabled={loading || !project.trim()} style={{ ...btn, background: "var(--accent-green)", color: "#fff", opacity: loading || !project.trim() ? 0.5 : 1 }}>
+        <button onClick={submit} disabled={loading || !project.trim() || (wantWorktree && !worktreeBranch.trim())} style={{ ...btn, background: "var(--accent-green)", color: "#fff", opacity: loading || !project.trim() || (wantWorktree && !worktreeBranch.trim()) ? 0.5 : 1 }}>
           {loading ? "Creating…" : "Create Session"}
         </button>
         <button onClick={onClose} style={{ ...btn, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>Cancel</button>
@@ -1210,6 +1230,7 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
   const [diffFile, setDiffFile] = useState<GitDiffFile | null>(null);
   const [committing, setCommitting] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [showWorktrees, setShowWorktrees] = useState(false);
   const [mergeStatus, setMergeStatus] = useState<MergeStatus | null>(null);
 
   useEffect(() => {
@@ -1376,6 +1397,12 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
               style={{ fontSize: 11, padding: "4px 10px", background: "var(--bg-hover)", color: "var(--accent-amber)", border: "1px solid #5a4527", borderRadius: 5 }}
             >
               Merge
+            </button>
+            <button
+              onClick={() => setShowWorktrees(true)}
+              style={{ fontSize: 11, padding: "4px 10px", background: "var(--bg-hover)", color: "var(--accent-blue)", border: "1px solid #274a5a", borderRadius: 5 }}
+            >
+              ⑂ Worktrees
             </button>
           </div>
         )}
@@ -1773,6 +1800,18 @@ function MobileGitPanel({ sessionId, session, onSessionChange, onClose }: { sess
               <button onClick={() => { setGitignoreDraft(gitignore); setEditingGitignore(false); }}
                 style={{ ...btn, flex: 1, background: "var(--bg-hover)", color: "var(--text-secondary)" }}>Cancel</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showWorktrees && (
+        <div style={{ position: "fixed", inset: 0, background: "var(--bg-base)", zIndex: 280, display: "flex", flexDirection: "column" }}>
+          <div style={{ flexShrink: 0, background: "var(--bg-surface)", borderBottom: "1px solid var(--border)", padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => setShowWorktrees(false)} style={{ background: "transparent", border: "none", color: "var(--text-secondary)", fontSize: 22, padding: "0 4px", cursor: "pointer", lineHeight: 1 }}>‹</button>
+            <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>Worktrees</span>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            <WorktreePanel sessionId={sessionId} />
           </div>
         </div>
       )}
@@ -6424,6 +6463,20 @@ export function MobilePage({ username, onLogout, onSwitchToAdmin, onOpenTool, th
   const jumpToSession = (id: string) => {
     getSession(id).then((s) => openDetail(s)).catch(() => {});
   };
+
+  // In-app "open this session" requests (e.g. from the worktree panel).
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (!id) return;
+      getSession(id).then((s) => {
+        history.pushState(null, "", `#/s/${s.id}`);
+        setOpenSession(s);
+      }).catch(() => {});
+    };
+    window.addEventListener(OPEN_SESSION_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SESSION_EVENT, onOpen);
+  }, []);
 
   // Re-filter at render so switching the open session hides its own banner item
   // immediately (before the next poll re-derives the list).

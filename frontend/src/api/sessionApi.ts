@@ -27,6 +27,8 @@ export interface SessionMeta {
   has_new_output: boolean;
   is_streaming: boolean;
   scheduled_tasks: ScheduledTask[];
+  /** Search results only: matched via conversation text, not name/path/title. */
+  conversation_match?: boolean;
   git_auto_commit: boolean;
   git_repo_url: string | null;
   tool: "claude" | "cursor" | "codex";
@@ -558,6 +560,8 @@ export function createSession(body: {
   tool?: "claude" | "cursor" | "codex";
   codex_transport?: "tui" | "app_server";
   transport?: "tmux" | "sdk";
+  /** Run the session in a NEW linked git worktree of the repo at cwd. */
+  worktree?: { branch: string; base?: string };
 }): Promise<SessionMeta> {
   return request("/api/sessions", {
     method: "POST",
@@ -2418,3 +2422,81 @@ export function getMonitorStats(sort: "cpu" | "mem" | "net" = "cpu", limit = 20)
   return request<MonitorStats>(`/api/admin/monitoring/stats?${params}`);
 }
 
+
+// ── Git worktrees ────────────────────────────────────────────────────────────
+
+export interface WorktreeSession {
+  id: string;
+  name: string;
+  project: string;
+  status: string;
+  tool: string;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  head: string;
+  is_main: boolean;
+  is_current: boolean;
+  detached: boolean;
+  locked: boolean;
+  prunable: boolean;
+  dirty: number;
+  ahead: number;
+  behind: number;
+  last_commit: string;
+  last_time: number;
+  sessions: WorktreeSession[];
+}
+
+/** One repository in a session's worktree view. */
+export interface WorktreeRepo {
+  /** Repository root relative to the session's cwd ("" = cwd itself). */
+  rel: string;
+  /** The scanned root (pass as `repo` to the mutating endpoints). */
+  root: string;
+  main_path: string;
+  base: string;
+  worktrees: WorktreeInfo[];
+}
+
+/** Worktree view of a session: its cwd's own repository (when cwd is a repo
+ *  root) plus repositories found in its subdirectories — never a repository
+ *  in a parent directory. */
+export interface WorktreeList {
+  repos: WorktreeRepo[];
+  cwd_is_repo: boolean;
+}
+
+export interface MergeWorktreeResult {
+  ok: boolean;
+  needs_sync?: boolean;
+  conflicted_files?: string[];
+  up_to_date?: boolean;
+  backup_branch?: string;
+  output: string;
+}
+
+export function listWorktrees(sessionId: string): Promise<WorktreeList> {
+  return request(`/api/sessions/${sessionId}/git/worktrees`);
+}
+
+export function addWorktree(sessionId: string, body: { repo: string; branch: string; base?: string; copy_env?: boolean }): Promise<{ path: string; branch: string }> {
+  return request(`/api/sessions/${sessionId}/git/worktrees`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export function mergeWorktree(sessionId: string, repo: string, path: string): Promise<MergeWorktreeResult> {
+  return request(`/api/sessions/${sessionId}/git/worktrees/merge`, { method: "POST", body: JSON.stringify({ repo, path }) });
+}
+
+export function removeWorktree(sessionId: string, repo: string, path: string, opts: { force?: boolean; delete_branch?: boolean } = {}): Promise<{ ok: boolean }> {
+  return request(`/api/sessions/${sessionId}/git/worktrees/remove`, { method: "POST", body: JSON.stringify({ repo, path, ...opts }) });
+}
+
+/** Ask the page (desktop or mobile) to open a session — used by panels that
+ *  don't own navigation state, e.g. the worktree panel. */
+export const OPEN_SESSION_EVENT = "cm-open-session";
+export function requestOpenSession(id: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_SESSION_EVENT, { detail: { id } }));
+}

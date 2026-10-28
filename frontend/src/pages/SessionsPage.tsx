@@ -40,6 +40,7 @@ import {
   type Goal,
   type TodoItem,
   type TodoPlan,
+  OPEN_SESSION_EVENT,
 } from "../api/sessionApi";
 // SessionMeta used for fileEditorSession state
 import { TuiPane } from "../components/TuiPane";
@@ -75,6 +76,12 @@ import {
 } from "../components/icons";
 
 const PAGE_SIZE = 30;
+
+// asciiCmp orders strings by plain code point (ASCII order: digits, then
+// A–Z, then a–z).
+function asciiCmp(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 
 /* ───── Fullscreen Clock ─────
  * Only mounts a 1s interval while the browser tab is actually in fullscreen
@@ -726,7 +733,7 @@ function NewSessionModal({
   workspaceBase: string;
   loading: boolean;
   enabledTools: string[];
-  onSubmit: (p: { project: string; cwd?: string; git_repo_url?: string; tool: "claude" | "cursor" | "codex"; codex_transport?: "tui" | "app_server"; transport?: "tmux" | "sdk" }) => void;
+  onSubmit: (p: { project: string; cwd?: string; git_repo_url?: string; tool: "claude" | "cursor" | "codex"; codex_transport?: "tui" | "app_server"; transport?: "tmux" | "sdk"; worktree?: { branch: string } }) => void;
   onClose: () => void;
 }) {
   // Always read username from the current JWT to stay in sync with actual token
@@ -754,6 +761,9 @@ function NewSessionModal({
   const [suffix, setSuffix] = useState("");
   const [cwdExists, setCwdExists] = useState(false);
   const [gitRepoUrl, setGitRepoUrl] = useState("");
+  // Run in a NEW linked git worktree of the (existing) repo at cwd.
+  const [useWorktree, setUseWorktree] = useState(false);
+  const [worktreeBranch, setWorktreeBranch] = useState("");
   const [archiveFile, setArchiveFile] = useState<File | null>(null);
   const [extracting, setExtracting] = useState(false);
   const archiveInputRef = useRef<HTMLInputElement>(null);
@@ -1034,6 +1044,27 @@ function NewSessionModal({
             </div>
           </div>
         )}
+        {cwdExists && suffix && (
+          <div>
+            <label style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} />
+              在新 git worktree 中运行
+            </label>
+            {useWorktree && (
+              <>
+                <input
+                  placeholder="新分支名, e.g. feat/login"
+                  value={worktreeBranch}
+                  onChange={(e) => setWorktreeBranch(e.target.value)}
+                  style={{ ...inputStyle, marginTop: 4 }}
+                />
+                <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 3 }}>
+                  从当前 HEAD 拉出新分支，放到 <span style={{ fontFamily: "monospace" }}>{fullCwd.replace(/\/+$/, "")}.worktrees/</span> 下（目录须是 git 仓库）；未跟踪的 .env 文件会被复制。
+                </div>
+              </>
+            )}
+          </div>
+        )}
         {cwdExists && gitRepoUrl && (
           <div style={{ fontSize: 11, color: "#f59e0b" }}>Directory already exists — git clone URL ignored.</div>
         )}
@@ -1042,7 +1073,7 @@ function NewSessionModal({
             Cancel
           </button>
           <button
-            disabled={loading || extracting || !project.trim() || (!!archiveFile && archiveFile.size > ARCHIVE_MAX_MB * 1024 * 1024)}
+            disabled={loading || extracting || !project.trim() || (useWorktree && cwdExists && !worktreeBranch.trim()) || (!!archiveFile && archiveFile.size > ARCHIVE_MAX_MB * 1024 * 1024)}
             onClick={async () => {
               const params = {
                 project: project.trim(),
@@ -1051,6 +1082,7 @@ function NewSessionModal({
                 tool,
                 ...(tool === "codex" ? { codex_transport: codexTransport } : {}),
                 ...(tool === "claude" && claudeTransport === "sdk" ? { transport: "sdk" as const } : {}),
+                ...(useWorktree && cwdExists && worktreeBranch.trim() ? { worktree: { branch: worktreeBranch.trim() } } : {}),
               };
               if (archiveFile && suffix.trim()) {
                 setExtracting(true);
@@ -1707,9 +1739,12 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
   const searchRef2 = useRef(search);
   searchRef2.current = search;
 
-  const refresh = useCallback(async (q?: string) => {
+  // q defaults to the current search box text, so a refresh after an action
+  // (create, stop, delete…) keeps the list filtered instead of silently
+  // showing every session under a still-filled search box.
+  const refresh = useCallback(async (q: string = searchRef2.current) => {
     try {
-      const res = await listSessions(q || undefined);
+      const res = await listSessions(q.trim() || undefined);
       // Merge in-place: preserve existing order, update data, add new at top
       setSessions((prev) => {
         const nextById = new Map(res.items.map((s) => [s.id, s]));
@@ -1882,7 +1917,12 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
 
   const isActiveSession = (s: SessionMeta) => s.status === "running" || s.status === "detached";
   const toolFilteredSessions = sessions.filter((s) => enabledTools.includes(s.tool));
-  const visibleSessions = showAllSessions ? toolFilteredSessions : toolFilteredSessions.filter(isActiveSession);
+  // Listed in ASCII order (project, then name). While searching every match
+  // is shown — the active-only filter would hide stopped hits.
+  const searching = search.trim() !== "";
+  const visibleSessions = (searching || showAllSessions ? toolFilteredSessions : toolFilteredSessions.filter(isActiveSession))
+    .slice()
+    .sort((a, b) => asciiCmp(a.project, b.project) || asciiCmp(a.name, b.name));
   const totalPages = Math.max(1, Math.ceil(visibleSessions.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages - 1);
   const pageItems = visibleSessions.slice(
@@ -2093,6 +2133,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
     tool: "claude" | "cursor" | "codex";
     codex_transport?: "tui" | "app_server";
     transport?: "tmux" | "sdk";
+    worktree?: { branch: string };
   }) => {
     setLoading(true);
     try {
@@ -2123,6 +2164,18 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
       alert(String(e));
     }
   };
+
+  // In-app "open this session" requests (e.g. from the worktree panel).
+  const handleAttachRef = useRef(handleAttach);
+  handleAttachRef.current = handleAttach;
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (id) handleAttachRef.current(id);
+    };
+    window.addEventListener(OPEN_SESSION_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SESSION_EVENT, onOpen);
+  }, []);
 
   // Sessions (other than the one currently open) that need user interaction —
   // feeds the top-right notifier so pending work is visible with the sidebar

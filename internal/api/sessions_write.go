@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/loki/goclaudemanager/internal/auth"
+	"github.com/loki/goclaudemanager/internal/git"
 	"github.com/loki/goclaudemanager/internal/model"
 )
 
@@ -45,6 +46,12 @@ type createSessionReq struct {
 	Tool            string            `json:"tool"`
 	CodexTransport  string            `json:"codex_transport"`
 	Transport       string            `json:"transport"`
+	// Worktree, when set, runs the session in a NEW linked git worktree of
+	// the repository at cwd (branch Branch, started from Base or HEAD).
+	Worktree *struct {
+		Branch string `json:"branch"`
+		Base   string `json:"base"`
+	} `json:"worktree"`
 }
 
 func createSession(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -80,6 +87,21 @@ func createSession(d Deps, w http.ResponseWriter, r *http.Request) {
 		if !d.Git.IsRepo(cwd) {
 			_ = d.Git.Init(r.Context(), cwd)
 		}
+	}
+
+	if body.Worktree != nil && strings.TrimSpace(body.Worktree.Branch) != "" {
+		if d.Git.SubdirOf(r.Context(), cwd) != "" {
+			writeErr(w, http.StatusBadRequest, "create worktree failed: "+cwd+" is not the root of a git repository (it is inside "+d.Git.Toplevel(r.Context(), cwd)+")")
+			return
+		}
+		wtPath, err := d.Git.AddWorktree(r.Context(), cwd, git.AddWorktreeOpts{
+			Branch: body.Worktree.Branch, Base: body.Worktree.Base, CopyEnv: true,
+		})
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "create worktree failed: "+err.Error())
+			return
+		}
+		cwd = wtPath
 	}
 
 	codexTransport := "tui"

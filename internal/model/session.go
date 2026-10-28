@@ -14,46 +14,46 @@ const (
 
 // AllowedTransitions mirrors session_store._ALLOWED_TRANSITIONS.
 var AllowedTransitions = map[SessionStatus]map[SessionStatus]bool{
-	StatusCreating: {StatusRunning: true, StatusTerminated: true},
-	StatusRunning:  {StatusDetached: true, StatusArchived: true, StatusTerminated: true},
-	StatusDetached: {StatusRunning: true, StatusArchived: true, StatusTerminated: true},
-	StatusArchived: {StatusRunning: true, StatusTerminated: true},
+	StatusCreating:   {StatusRunning: true, StatusTerminated: true},
+	StatusRunning:    {StatusDetached: true, StatusArchived: true, StatusTerminated: true},
+	StatusDetached:   {StatusRunning: true, StatusArchived: true, StatusTerminated: true},
+	StatusArchived:   {StatusRunning: true, StatusTerminated: true},
 	StatusTerminated: {StatusRunning: true}, // resume
 }
 
 // Session mirrors pydantic SessionMetadata. Pointers model Python's
 // Optional[...] (serialized as JSON null, matching pydantic's default output).
 type Session struct {
-	ID               string            `json:"id"`
-	OwnerID          string            `json:"owner_id"`
-	Name             string            `json:"name"`
-	Project          string            `json:"project"`
-	Cwd              string            `json:"cwd"`
-	Env              map[string]string `json:"env"`
-	Model            *string           `json:"model"`
-	Tool             string            `json:"tool"`
-	Status           SessionStatus     `json:"status"`
-	CreatedAt        ISOTime           `json:"created_at"`
-	UpdatedAt        ISOTime           `json:"updated_at"`
-	AttachedClients  int               `json:"attached_clients"`
-	LastOutputOffset int64             `json:"last_output_offset"`
-	LastActivityAt   *ISOTime          `json:"last_activity_at"`
-	LastTurnAt       *ISOTime          `json:"last_turn_at"`
-	WsToken          *string           `json:"ws_token"`
-	TmuxSessionName  string            `json:"tmux_session_name"`
-	ResumeSessionID  *string           `json:"resume_session_id"`
-	AgentSessionID   *string           `json:"agent_session_id"`
-	ClaudeProcPID    *int              `json:"claude_proc_pid"`
-	CodexTransport   string            `json:"codex_transport"`
-	CodexAppserverPID  *int            `json:"codex_appserver_pid"`
-	CodexAppserverPort *int            `json:"codex_appserver_port"`
+	ID                 string            `json:"id"`
+	OwnerID            string            `json:"owner_id"`
+	Name               string            `json:"name"`
+	Project            string            `json:"project"`
+	Cwd                string            `json:"cwd"`
+	Env                map[string]string `json:"env"`
+	Model              *string           `json:"model"`
+	Tool               string            `json:"tool"`
+	Status             SessionStatus     `json:"status"`
+	CreatedAt          ISOTime           `json:"created_at"`
+	UpdatedAt          ISOTime           `json:"updated_at"`
+	AttachedClients    int               `json:"attached_clients"`
+	LastOutputOffset   int64             `json:"last_output_offset"`
+	LastActivityAt     *ISOTime          `json:"last_activity_at"`
+	LastTurnAt         *ISOTime          `json:"last_turn_at"`
+	WsToken            *string           `json:"ws_token"`
+	TmuxSessionName    string            `json:"tmux_session_name"`
+	ResumeSessionID    *string           `json:"resume_session_id"`
+	AgentSessionID     *string           `json:"agent_session_id"`
+	ClaudeProcPID      *int              `json:"claude_proc_pid"`
+	CodexTransport     string            `json:"codex_transport"`
+	CodexAppserverPID  *int              `json:"codex_appserver_pid"`
+	CodexAppserverPort *int              `json:"codex_appserver_port"`
 	// Transport selects how the server drives a claude session: "tmux"
 	// (send-keys/capture-pane screen-scraping, the default) or "sdk" (the
 	// claude-structured wrapper driven over json-in/json-out NDJSON).
-	Transport        string            `json:"transport"`
-	GitAutoCommit    bool              `json:"git_auto_commit"`
-	GitCommitMsgCount int              `json:"git_commit_msg_count"`
-	GitRepoURL       *string           `json:"git_repo_url"`
+	Transport         string  `json:"transport"`
+	GitAutoCommit     bool    `json:"git_auto_commit"`
+	GitCommitMsgCount int     `json:"git_commit_msg_count"`
+	GitRepoURL        *string `json:"git_repo_url"`
 }
 
 // TaskView mirrors pydantic TaskView (scheduled task as returned to the UI).
@@ -89,6 +89,9 @@ type SessionView struct {
 	HasNewOutput    bool       `json:"has_new_output"`
 	IsStreaming     bool       `json:"is_streaming"`
 	ScheduledTasks  []TaskView `json:"scheduled_tasks"`
+	// ConversationMatch: in a search result, the session matched only via its
+	// conversation text (not its name/path/title).
+	ConversationMatch bool `json:"conversation_match,omitempty"`
 }
 
 // SessionListResponse mirrors pydantic SessionListResponse.

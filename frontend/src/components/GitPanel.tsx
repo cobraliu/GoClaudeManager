@@ -19,6 +19,7 @@ import {
 import { GitGraph } from "./GitGraph";
 import { ConfirmAffectingChangeModal } from "./GitBranchPicker";
 import { MergeTab } from "./MergeTab";
+import { WorktreePanel } from "./WorktreePanel";
 import { ShadowRewindSection } from "./ShadowRewindSection";
 
 interface Props {
@@ -462,7 +463,7 @@ export function GitPanel({ sessionId, onClose, inline = false }: Props) {
   // Revert confirm state
   const [revertCandidate, setRevertCandidate] = useState<{ hash: string; short: string } | null>(null);
   // Top-level tab: history (the existing view) vs merge (conflict resolver)
-  const [activeTab, setActiveTab] = useState<"history" | "merge">("history");
+  const [activeTab, setActiveTab] = useState<"history" | "merge" | "worktrees">("history");
   // Surfaced when a merge is half-done (in_progress) — drives a banner in the History tab.
   const [mergeStatus, setMergeStatus] = useState<MergeStatus | null>(null);
 
@@ -674,7 +675,7 @@ export function GitPanel({ sessionId, onClose, inline = false }: Props) {
 
         {/* tabs */}
         <div style={{ display: "flex", background: "var(--bg-surface)", borderBottom: "1px solid var(--bg-hover)", flexShrink: 0 }}>
-          {(["history", "merge"] as const).map(t => (
+          {(["history", "merge", "worktrees"] as const).map(t => (
             <button
               key={t}
               onClick={() => setActiveTab(t)}
@@ -685,21 +686,23 @@ export function GitPanel({ sessionId, onClose, inline = false }: Props) {
                 borderRadius: 0, padding: "6px 18px", fontSize: 12, fontWeight: 600,
               }}
             >
-              {t === "history" ? "History" : "Merge"}
+              {t === "history" ? "History" : t === "merge" ? "Merge" : "Worktrees"}
             </button>
           ))}
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: activeTab === "merge" ? 0 : "12px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: activeTab === "history" ? "12px 16px" : 0, display: "flex", flexDirection: "column", gap: 10 }}>
           {/* status message */}
           {msg && (
-            <div style={{ fontSize: 12, color: "var(--text-secondary)", background: "var(--bg-surface)", borderRadius: 4, padding: activeTab === "merge" ? "6px 16px" : "6px 10px", fontFamily: "monospace", wordBreak: "break-all" }}>
+            <div style={{ fontSize: 12, color: "var(--text-secondary)", background: "var(--bg-surface)", borderRadius: 4, padding: activeTab === "history" ? "6px 10px" : "6px 16px", fontFamily: "monospace", wordBreak: "break-all" }}>
               {msg}
               <button onClick={() => setMsg(null)} style={{ float: "right", background: "transparent", color: "var(--text-faint)", fontSize: 11 }}>✕</button>
             </div>
           )}
 
-          {activeTab === "merge" ? (
+          {activeTab === "worktrees" ? (
+            <WorktreePanel sessionId={sessionId} />
+          ) : activeTab === "merge" ? (
             <MergeTab
               sessionId={sessionId}
               branches={branches}

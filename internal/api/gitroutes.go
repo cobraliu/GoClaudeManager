@@ -45,6 +45,7 @@ func registerGitRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}/git/file-show", func(w http.ResponseWriter, r *http.Request) { gitFileShow(d, w, r) })
 	r.Get("/{id}/git/file-diff", func(w http.ResponseWriter, r *http.Request) { gitFileDiff(d, w, r) })
 	r.Post("/{id}/git/diff", func(w http.ResponseWriter, r *http.Request) { gitDiff(d, w, r) })
+	registerWorktreeRoutes(r, d)
 
 	// Shadow-git rewind system (independent of the real .git) — shadow_routes.go.
 	r.Get("/{id}/shadow/log", func(w http.ResponseWriter, r *http.Request) { shadowLogHandler(d, w, r) })
@@ -409,7 +410,7 @@ func gitMergeFile(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	if !fileExists(filepath.Join(s.Cwd, ".git", "MERGE_HEAD")) {
+	if !fileExists(d.Git.MergeHeadPath(r.Context(), s.Cwd)) {
 		writeErr(w, http.StatusBadRequest, "no merge in progress")
 		return
 	}
@@ -427,7 +428,7 @@ func gitMergeResolve(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	if !fileExists(filepath.Join(s.Cwd, ".git", "MERGE_HEAD")) {
+	if !fileExists(d.Git.MergeHeadPath(r.Context(), s.Cwd)) {
 		writeErr(w, http.StatusBadRequest, "no merge in progress")
 		return
 	}

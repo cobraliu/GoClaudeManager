@@ -149,13 +149,15 @@ func listSessions(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items = filterSessions(d, items, r.URL.Query().Get("q"))
+	items, convOnly := filterSessions(d, items, r.URL.Query().Get("q"))
 	ids := sessionIDs(items)
 	newOut, _ := d.Store.GetHasNewOutputBulk(ids, who.Username)
 	taskMap, _ := d.Store.ListPendingTasksForSessions(ids)
 	views := make([]model.SessionView, 0, len(items))
 	for _, s := range items {
-		views = append(views, d.enrich(s, newOut[s.ID], taskViews(taskMap[s.ID])))
+		v := d.enrich(s, newOut[s.ID], taskViews(taskMap[s.ID]))
+		v.ConversationMatch = convOnly[s.ID]
+		views = append(views, v)
 	}
 	writeJSON(w, http.StatusOK, model.SessionListResponse{Items: views, Total: len(views)})
 }
@@ -166,10 +168,12 @@ func listAllSessions(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items = filterSessions(d, items, r.URL.Query().Get("q"))
+	items, convOnly := filterSessions(d, items, r.URL.Query().Get("q"))
 	views := make([]model.SessionView, 0, len(items))
 	for _, s := range items {
-		views = append(views, d.enrich(s, false, nil))
+		v := d.enrich(s, false, nil)
+		v.ConversationMatch = convOnly[s.ID]
+		views = append(views, v)
 	}
 	writeJSON(w, http.StatusOK, model.SessionListResponse{Items: views, Total: len(views)})
 }
@@ -427,45 +431,85 @@ func sessionIDs(items []*model.Session) []string {
 }
 
 // filterSessions mirrors _filter_sessions (metadata + conversation text search).
-func filterSessions(d Deps, items []*model.Session, q string) []*model.Session {
-	q = strings.TrimSpace(q)
-	if q == "" {
-		return items
+// filterSessions keeps the sessions matching the search query q. q is split
+// into whitespace-separated terms; every term must match (case-insensitive
+// substring) either a session field — project, tmux name, id, cwd, agent
+// session id, model, or the Claude/Cursor title shown on the card — or, for
+// claude/codex sessions, the conversation text. convOnly reports the ids that
+// matched only through the conversation (some term was found nowhere else),
+// so the UI can flag them. Status and owner are deliberately not searched:
+// "run" or the username would match nearly every session.
+func filterSessions(d Deps, items []*model.Session, q string) (out []*model.Session, convOnly map[string]bool) {
+	terms := strings.Fields(strings.ToLower(q))
+	if len(terms) == 0 {
+		return items, nil
 	}
-	ql := strings.ToLower(q)
-	var out []*model.Session
+	convOnly = map[string]bool{}
 	for _, s := range items {
-		model_ := ""
+		model_, agent := "", ""
 		if s.Model != nil {
 			model_ = *s.Model
 		}
-		agent := ""
 		if s.AgentSessionID != nil {
 			agent = *s.AgentSessionID
 		}
-		if strings.Contains(strings.ToLower(s.Project), ql) ||
-			strings.Contains(strings.ToLower(s.Cwd), ql) ||
-			strings.Contains(strings.ToLower(agent), ql) ||
-			strings.Contains(strings.ToLower(s.Status), ql) ||
-			strings.Contains(strings.ToLower(model_), ql) ||
-			strings.Contains(strings.ToLower(s.OwnerID), ql) {
-			out = append(out, s)
-			continue
-		}
-		// conversation text search via cached enrich search_text
-		if agent != "" {
+		meta := strings.ToLower(strings.Join([]string{s.Project, s.Name, s.ID, s.Cwd, agent, model_}, "\n"))
+
+		// Title and conversation text need the (cached) transcript; load it
+		// only when some term is not already in the plain fields.
+		var title string
+		var texts []string
+		loaded := false
+		load := func() {
+			if loaded || agent == "" {
+				return
+			}
+			loaded = true
+			if s.Tool == "cursor" {
+				if res, err := jsonl.EnrichCursorSession(agent, s.Cwd); err == nil && res.Title != nil {
+					title = strings.ToLower(*res.Title)
+				}
+				return
+			}
 			if path := jsonl.FindSessionJSONL(agent, s.Cwd); path != "" {
 				res := d.JSONL.Enrich(path)
-				for _, t := range res.SearchText {
-					if strings.Contains(strings.ToLower(t), ql) {
-						out = append(out, s)
-						break
-					}
+				if res.Title != nil {
+					title = strings.ToLower(*res.Title)
 				}
+				texts = res.SearchText
+			}
+		}
+
+		ok, viaConv := true, false
+		for _, t := range terms {
+			if strings.Contains(meta, t) {
+				continue
+			}
+			load()
+			if strings.Contains(title, t) {
+				continue
+			}
+			found := false
+			for _, x := range texts {
+				if strings.Contains(strings.ToLower(x), t) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				ok = false
+				break
+			}
+			viaConv = true
+		}
+		if ok {
+			out = append(out, s)
+			if viaConv {
+				convOnly[s.ID] = true
 			}
 		}
 	}
-	return out
+	return out, convOnly
 }
 
 func queryInt(r *http.Request, key string, def int) int {

@@ -13,10 +13,24 @@ import (
 // git CLI: merge-tree conflict probing, three-way merge, stage extraction, and
 // merge --abort have no faithful go-git equivalent in v5.
 
+// MergeHeadPath returns the MERGE_HEAD path for the work tree at cwd. In a
+// linked worktree .git is a file and per-worktree state lives under
+// <common>/worktrees/<name>/, so ask git rather than assuming cwd/.git/.
+func (s *Service) MergeHeadPath(ctx context.Context, cwd string) string {
+	p := strings.TrimSpace(s.outOK(ctx, cwd, "rev-parse", "--git-path", "MERGE_HEAD"))
+	if p == "" {
+		return filepath.Join(cwd, ".git", "MERGE_HEAD")
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(cwd, p)
+	}
+	return p
+}
+
 // MergeStatus reports whether a merge is in progress and which files conflict.
 // Mirrors git_merge_status.
 func (s *Service) MergeStatus(ctx context.Context, cwd string) MergeStatus {
-	mergeHeadPath := filepath.Join(cwd, ".git", "MERGE_HEAD")
+	mergeHeadPath := s.MergeHeadPath(ctx, cwd)
 	st := MergeStatus{CurrentBranch: s.CurrentBranch(cwd), ConflictedFiles: []string{}}
 	data, err := os.ReadFile(mergeHeadPath)
 	if err != nil {
@@ -185,7 +199,7 @@ func (s *Service) MergeStart(ctx context.Context, cwd, source, target string) Me
 	if source == target {
 		return MergeStartResult{OK: false, Output: "source and target branches are the same"}
 	}
-	if _, err := os.Stat(filepath.Join(cwd, ".git", "MERGE_HEAD")); err == nil {
+	if _, err := os.Stat(s.MergeHeadPath(ctx, cwd)); err == nil {
 		return MergeStartResult{OK: false, Output: "a merge is already in progress; resolve or abort it first"}
 	}
 	if s.IsDirty(ctx, cwd) {
@@ -274,7 +288,7 @@ func (s *Service) ResolveFile(ctx context.Context, cwd, path, content string) Co
 // MergeContinue finalises an in-progress merge, refusing if files remain
 // unmerged. An empty message uses --no-edit. Mirrors git_merge_continue.
 func (s *Service) MergeContinue(ctx context.Context, cwd, message string) CommandResult {
-	if _, err := os.Stat(filepath.Join(cwd, ".git", "MERGE_HEAD")); err != nil {
+	if _, err := os.Stat(s.MergeHeadPath(ctx, cwd)); err != nil {
 		return CommandResult{OK: false, Output: "no merge in progress"}
 	}
 	status := s.MergeStatus(ctx, cwd)
