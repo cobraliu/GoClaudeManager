@@ -67,6 +67,9 @@ func answerAUQ(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 
 	pane := s.TmuxSessionName + ":0.0"
+	if d.Snapshot != nil {
+		d.Snapshot.BeginAUQSubmit(s.ID, nil) // texts taken from the surfaced AUQ
+	}
 
 	for i, answer := range body.Answers {
 		if i > 0 {
@@ -179,6 +182,13 @@ func auqSubmit(d Deps, w http.ResponseWriter, r *http.Request) {
 
 	pane := s.TmuxSessionName + ":0.0"
 	questions := body.Questions
+	if d.Snapshot != nil {
+		texts := make([]string, 0, len(questions))
+		for _, q := range questions {
+			texts = append(texts, asString(q["question"]))
+		}
+		d.Snapshot.BeginAUQSubmit(s.ID, texts)
+	}
 
 	for i, raw := range body.Answers {
 		if i > 0 {

@@ -62,6 +62,11 @@ type Manager struct {
 	// "stuck on the Submit answers confirm" case (a missed confirming Enter) and
 	// press Enter once more. Guarded by autoMu.
 	lastAUQSubmit map[string]time.Time
+
+	// auqSubmits tracks in-flight / just-finished send-keys AUQ submits so
+	// Compute stops re-reporting the questions being answered (see
+	// auq_suppress.go). Guarded by autoMu.
+	auqSubmits map[string]*auqSubmitState
 }
 
 // sessionLister is the subset of the store this package needs.
@@ -73,14 +78,23 @@ type sessionLister interface {
 func NewManager(store sessionLister, tx *tmux.Client, jc *jsonl.Cache) *Manager {
 	return &Manager{store: store, tmux: tx, jsonl: jc, snap: map[string]Computed{},
 		lastAutoConfirm: map[string]time.Time{},
-		lastAUQSubmit:   map[string]time.Time{}}
+		lastAUQSubmit:   map[string]time.Time{},
+		auqSubmits:      map[string]*auqSubmitState{}}
 }
 
 // Get returns the cached status for a session, if present.
 func (m *Manager) Get(sessionID string) (Computed, bool) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	c, ok := m.snap[sessionID]
+	m.mu.RUnlock()
+	if ok && c.TuiAuqData != nil {
+		// A refresh that started before an AUQ submit can land after it with
+		// the question still on screen; filter on read so it never re-pops.
+		if inFlight, recent := m.auqSuppression(sessionID); inFlight || auqMatchesSubmitted(c.TuiAuqData, recent) {
+			c.TuiAuqData = nil
+			c.TuiHint = nil
+		}
+	}
 	return c, ok
 }
 
@@ -332,9 +346,26 @@ func (m *Manager) Compute(s *model.Session) Computed {
 		}
 	}
 
+	// Don't re-surface the AUQ being answered right now (or just answered):
+	// mid-submit the screen shows the batch's next question and then the
+	// "Submit answers" review, which would otherwise pop the card back up.
+	suppressHint := false
+	if inFlight, recent := m.auqSuppression(s.ID); inFlight || len(recent) > 0 {
+		if auq != nil && (inFlight || auqMatchesSubmitted(auq, recent)) {
+			auq = nil
+			suppressHint = true
+		}
+		if pidWaiting && (inFlight || (hintType == "auq" && auq == nil) ||
+			(hintType == "approve" && approve == nil && claudestat.IsAUQSubmitConfirm(captureScreen()))) {
+			suppressHint = true
+		}
+	}
+
 	// TUI hint.
 	var hint *string
-	if auq != nil && !pidWaiting {
+	if suppressHint {
+		// answering in progress — no hint
+	} else if auq != nil && !pidWaiting {
 		h := "Claude is asking a question — answer in Chat or switch to TUI"
 		hint = &h
 	} else if pidWaiting && !dialogAutoConfirmed {
@@ -427,6 +458,7 @@ func (m *Manager) NoteAUQSubmitted(sessionID string) {
 	m.autoMu.Lock()
 	m.lastAUQSubmit[sessionID] = time.Now()
 	m.autoMu.Unlock()
+	m.endAUQSubmit(sessionID)
 }
 
 // maybeRetryAUQSubmit handles the occasional case where a web/mobile AUQ submit's

@@ -2120,7 +2120,10 @@ function AskUserQuestionBlock({ sessionId, blockId, questions, onSubmitAnswers, 
 
   const _dismiss = () => {
     _markAuqBlockDismissed(sessionId, blockId);
-    _markAuqDismissed(sessionId, _qText);
+    // Mark EVERY question of the batch: while a multi-question answer is typed
+    // into the TUI, the screen source surfaces question 2..n on their own,
+    // which would otherwise read as a new AUQ and re-pop the card.
+    for (const q_i of questions) if (q_i.question) _markAuqDismissed(sessionId, q_i.question);
     setDismissed(true);
   };
 
