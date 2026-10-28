@@ -608,8 +608,11 @@ export function terminateSession(sessionId: string): Promise<void> {
   return request(`/api/sessions/${sessionId}/terminate`, { method: "POST" });
 }
 
-export function resumeSession(sessionId: string): Promise<SessionMeta> {
-  return request(`/api/sessions/${sessionId}/resume`, { method: "POST" });
+export function resumeSession(sessionId: string, transport?: "tmux" | "sdk"): Promise<SessionMeta> {
+  return request(`/api/sessions/${sessionId}/resume`, {
+    method: "POST",
+    body: transport ? JSON.stringify({ transport }) : undefined,
+  });
 }
 
 export interface AvailableClaudeSession {

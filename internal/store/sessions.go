@@ -310,6 +310,13 @@ func (s *Store) UpdateClaudeProcPID(id string, pid *int) error {
 	}
 	return err
 }
+func (s *Store) UpdateTransport(id, transport string) error {
+	err := s.execTouch(`UPDATE sessions SET transport = ?, updated_at = ? WHERE id = ?`, transport, id)
+	if err == nil {
+		logWrite(id, "transport", transport)
+	}
+	return err
+}
 func (s *Store) UpdateAgentSessionID(id, agentID string) error {
 	err := s.execTouch(`UPDATE sessions SET agent_session_id = ?, updated_at = ? WHERE id = ?`, agentID, id)
 	if err == nil {

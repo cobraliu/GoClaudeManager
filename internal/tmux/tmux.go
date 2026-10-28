@@ -411,19 +411,20 @@ func (c *Client) CreateSession(sessionName, cwd string, env map[string]string,
 func (c *Client) CreateSDKSession(sessionName, cwd string, env map[string]string,
 	structuredBin, claudeModel, resumeSessionID, jsonIn, jsonOut string) error {
 
+	backend := c.claudeBin()
 	parts := []string{
 		shellQuote(structuredBin),
-		"--backend", "claude",
+		"--backend", shellQuote(backend),
 		"--auto-allow",
 		"--cwd", shellQuote(cwd),
 		"--json-in", shellQuote(jsonIn),
 		"--json-out", shellQuote(jsonOut),
 	}
-	if claudeModel != "" {
-		parts = append(parts, "--model", shellQuote(claudeModel))
-	}
+	// Same rule as buildClaudeCommand: a resumed session keeps its own model.
 	if resumeSessionID != "" {
 		parts = append(parts, "--resume", shellQuote(resumeSessionID))
+	} else if claudeModel != "" {
+		parts = append(parts, "--model", shellQuote(claudeModel))
 	}
 	// Nested env: the outer `env -u` strips any stale tap URL leaked from the
 	// tmux server env; the inner prefix (from buildEnvPrefix) re-sets whatever

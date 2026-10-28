@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -161,6 +162,7 @@ func createSession(d Deps, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = d.Store.Transition(s.ID, model.StatusRunning)
+		recordSDKPanePID(d, s.ID, tmuxName)
 		d.SDK.Start(s.ID)
 		out, _ := d.Store.GetSession(s.ID)
 		writeJSONStatus(w, http.StatusCreated, out)
@@ -292,6 +294,26 @@ func resumeSession(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "codex app_server resume not yet supported")
 		return
 	}
+	// Allow callers to switch transport on resume.
+	var resumeBody struct {
+		Transport string `json:"transport"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&resumeBody)
+	if resumeBody.Transport != "" && resumeBody.Transport != s.Transport {
+		if resumeBody.Transport == "sdk" {
+			if s.Tool != "claude" {
+				writeErr(w, http.StatusConflict, "sdk transport is only available for claude sessions")
+				return
+			}
+			if !d.Cfg.SDKAvailable() {
+				writeErr(w, http.StatusConflict,
+					"sdk transport unavailable: claude-structured binary not found at "+d.Cfg.StructuredBinResolved())
+				return
+			}
+		}
+		s.Transport = resumeBody.Transport
+		_ = d.Store.UpdateTransport(s.ID, resumeBody.Transport)
+	}
 	_ = os.MkdirAll(s.Cwd, 0o755)
 	ts := time.Now().Unix()
 	tmuxName := "claude-" + s.OwnerID + "-" + s.Project + "-" + itoa(ts)
@@ -347,6 +369,7 @@ func resumeSession(d Deps, w http.ResponseWriter, r *http.Request) {
 		_ = d.Store.UpdateTmuxSessionName(s.ID, tmuxName)
 		_, _ = d.Store.Transition(s.ID, model.StatusRunning)
 		_ = d.Store.ResetAttachedClients(s.ID)
+		recordSDKPanePID(d, s.ID, tmuxName)
 		// session_start from the new wrapper re-pins agent_session_id (the SDK
 		// forks --resume to a fresh id, and the pump's view is authoritative).
 		d.SDK.Start(s.ID)
@@ -529,3 +552,14 @@ func isDir(p string) bool {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// recordSDKPanePID stores the claude-structured bridge's pid (the pane process,
+// parent of the claude CLI) as the session's process-monitor root, so Procs
+// works for Stream JSON sessions like it does for tmux ones.
+func recordSDKPanePID(d Deps, sessionID, tmuxName string) {
+	if pid, ok := d.Tmux.GetPanePID(tmuxName); ok && pid > 0 {
+		_ = d.Store.UpdateClaudeProcPID(sessionID, &pid)
+	} else {
+		_ = d.Store.UpdateClaudeProcPID(sessionID, nil)
+	}
+}

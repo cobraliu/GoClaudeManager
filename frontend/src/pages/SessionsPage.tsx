@@ -914,7 +914,7 @@ function NewSessionModal({
                       opacity: disabled ? 0.55 : 1,
                     }}
                   >
-                    {k === "tmux" ? "tmux (默认)" : "SDK"}
+                    {k === "tmux" ? "tmux (默认)" : "Stream JSON"}
                   </button>
                 );
               })}
@@ -1193,10 +1193,12 @@ function BrowseExternalPanel({
   onLoad,
   onClose,
   enabledTools,
+  sdkAvailable,
 }: {
-  onLoad: (tool: "claude" | "cursor" | "codex", session: ExternalSession) => void;
+  onLoad: (tool: "claude" | "cursor" | "codex", session: ExternalSession, transport?: "tmux" | "sdk") => void;
   onClose: () => void;
   enabledTools: string[];
+  sdkAvailable?: boolean;
 }) {
   const allTabs = (["claude", "codex", "cursor"] as const).filter((t) => enabledTools.includes(t));
   const initialTab: "claude" | "cursor" | "codex" = (allTabs[0] as "claude" | "cursor" | "codex" | undefined) ?? "claude";
@@ -1207,6 +1209,7 @@ function BrowseExternalPanel({
   const [selectedDir, setSelectedDir] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [viewingSession, setViewingSession] = useState<ExternalSession | null>(null);
+  const [loadTransport, setLoadTransport] = useState<"tmux" | "sdk">("tmux");
 
   useEffect(() => {
     setLoading(true);
@@ -1427,13 +1430,29 @@ function BrowseExternalPanel({
                       >
                         View
                       </button>
+                      {tool === "claude" && (
+                        <button
+                          onClick={() => setLoadTransport((v) => (v === "tmux" ? "sdk" : "tmux"))}
+                          title={loadTransport === "tmux" ? "tmux 模式（点击切换为 Stream JSON）" : "Stream JSON 模式（点击切换为 tmux）"}
+                          style={{
+                            background: loadTransport === "sdk" ? "var(--accent-blue)" : "var(--bg-hover)",
+                            color: loadTransport === "sdk" ? "#fff" : "var(--text-secondary)",
+                            border: "1px solid var(--border)", borderRadius: 4,
+                            padding: "3px 6px", fontSize: 10,
+                            cursor: "pointer", flexShrink: 0,
+                            fontFamily: "monospace",
+                          }}
+                        >
+                          {loadTransport === "sdk" ? "stream" : "tmux"}
+                        </button>
+                      )}
                       <button
                         disabled={!canLoad || isLoadingThis}
                         title={canLoad ? "Load session" : "Directory does not exist"}
                         onClick={async () => {
                           if (!canLoad) return;
                           setLoadingId(s.agent_session_id);
-                          try { await onLoad(tool, s); } finally { setLoadingId(null); }
+                          try { await onLoad(tool, s, tool === "claude" ? loadTransport : undefined); } finally { setLoadingId(null); }
                         }}
                         style={{
                           background: canLoad ? "var(--accent-blue)" : "var(--bg-hover)",
@@ -1475,6 +1494,12 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
   const [workspaceBase, setWorkspaceBase] = useState("");
   const [terminalFont, setTerminalFont] = useState<string | undefined>(undefined);
   const [enabledTools, setEnabledTools] = useState<string[]>(["claude", "codex", "cursor"]);
+  const [sdkAvailable, setSdkAvailable] = useState(false);
+  useEffect(() => {
+    getAvailableTools()
+      .then((t) => setSdkAvailable(!!t.claude_sdk))
+      .catch(() => setSdkAvailable(false));
+  }, []);
   const [fileEditorSession, setFileEditorSession] = useState<SessionMeta | null>(null);
   // Inline overlay in the conversation column (sits above bottom toolbar, replaces TUI/Chat content)
   const [inlineView, setInlineView] = useState<"git" | "jsonl" | "memory" | null>(null);
@@ -2149,10 +2174,10 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
     }
   };
 
-  const handleResume = async (s: SessionMeta) => {
+  const handleResume = async (s: SessionMeta, transport?: "tmux" | "sdk") => {
     setLoading(true);
     try {
-      await resumeSession(s.id);
+      await resumeSession(s.id, transport);
       await refresh();
       const res = await attachSession(s.id);
       setActive(res);
@@ -2165,12 +2190,13 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
     }
   };
 
-  const handleLoadExternal = async (ext: ExternalSession) => {
+  const handleLoadExternal = async (ext: ExternalSession, transport?: "tmux" | "sdk") => {
     const dirName = ext.cwd.split("/").filter(Boolean).pop() || ext.cwd;
     const newSession = await createSession({
       project: dirName,
       cwd: ext.cwd,
       resume_session_id: ext.agent_session_id,
+      ...(transport === "sdk" ? { transport: "sdk" } : {}),
     });
     await refresh();
     const res = await attachSession(newSession.id);
@@ -2375,7 +2401,8 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
               onAttach={() => handleAttach(s.id)}
               onViewChat={() => handleViewChat(s.id)}
               onTerminate={() => handleTerminate(s.id)}
-              onResume={() => handleResume(s)}
+              onResume={(transport) => handleResume(s, transport)}
+              sdkAvailable={sdkAvailable}
               onDelete={() => handleDelete(s.id)}
               onTaskChange={() => refresh(searchRef2.current)}
               onRename={() => refresh(searchRef2.current)}
@@ -3055,10 +3082,11 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
       {showBrowse && (
         <BrowseExternalPanel
           enabledTools={enabledTools}
-          onLoad={(t, s) => {
+          sdkAvailable={sdkAvailable}
+          onLoad={(t, s, transport) => {
             if (t === "codex") return handleLoadCodex(s);
             if (t === "cursor") return handleLoadCursor(s);
-            return handleLoadExternal(s);
+            return handleLoadExternal(s, transport);
           }}
           onClose={() => setShowBrowse(false)}
         />

@@ -373,7 +373,7 @@ function CreateModal({
                     disabled={disabled}
                     style={{ ...pillBtn(claudeTransport === k), ...(disabled ? { opacity: 0.5, cursor: "not-allowed" } : {}), textTransform: "none" as const }}
                   >
-                    {k === "tmux" ? "tmux (默认)" : "SDK"}
+                    {k === "tmux" ? "tmux (默认)" : "Stream JSON"}
                   </button>
                 );
               })}
@@ -772,11 +772,14 @@ function ListView({ username, onLogout, onOpen, onSwitchToAdmin, onOpenTool, the
   };
 
   const [resumingId, setResumingId] = useState<string | null>(null);
+  const [resumeTransportMap, setResumeTransportMap] = useState<Record<string, "tmux" | "sdk">>({});
   const handleResume = async (e: React.MouseEvent, s: SessionMeta) => {
     e.stopPropagation();
     setResumingId(s.id);
+    const transport = resumeTransportMap[s.id];
+    const current = (s.transport as "tmux" | "sdk") || "tmux";
     try {
-      await resumeSession(s.id);
+      await resumeSession(s.id, transport && transport !== current ? transport : undefined);
       await fetchSessions(page, false);
       onOpen({ ...s, status: "running" });
     } catch (err) { alert(String(err)); } finally { setResumingId(null); }
@@ -885,6 +888,24 @@ function ListView({ username, onLogout, onOpen, onSwitchToAdmin, onOpenTool, the
                   ) : null}
                   {s.status === "terminated" && (
                     <>
+                      {s.tool === "claude" && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const cur = resumeTransportMap[s.id] || s.transport || "tmux";
+                            setResumeTransportMap((m) => ({ ...m, [s.id]: cur === "tmux" ? "sdk" : "tmux" }));
+                          }}
+                          style={{
+                            background: (resumeTransportMap[s.id] || s.transport || "tmux") === "sdk" ? "var(--accent-blue)" : "var(--bg-hover)",
+                            color: (resumeTransportMap[s.id] || s.transport || "tmux") === "sdk" ? "#fff" : "var(--text-secondary)",
+                            border: "1px solid var(--border)", borderRadius: 3,
+                            fontSize: 9, padding: "1px 4px",
+                            cursor: "pointer", flexShrink: 0, fontFamily: "monospace",
+                          }}
+                        >
+                          {(resumeTransportMap[s.id] || s.transport || "tmux") === "sdk" ? "stream" : "tmux"}
+                        </button>
+                      )}
                       <button
                         onClick={(e) => handleResume(e, s)}
                         disabled={resumingId === s.id}

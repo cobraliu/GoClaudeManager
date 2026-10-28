@@ -53,11 +53,12 @@ go build -o bin/proxy ./cmd/proxy
 echo "==> [3/3] Building web server (bin/gocm)…"
 go build -o bin/gocm ./cmd/server
 
-# Optional: the claude-structured wrapper for the SDK session transport.
-# Skips silently when ../rewriteCodeCli or bun is missing.
-bash scripts/build-structured.sh
+# claude-structured bridge: translates between json-in/json-out FIFO protocol
+# and Claude Code's native --input-format/--output-format stream-json.
+echo "==> [4/4] Building claude-structured bridge (bin/claude-structured)…"
+go build -o bin/claude-structured ./cmd/claude-structured
 
-echo "==> Done: frontend/dist, bin/proxy, bin/gocm"
+echo "==> Done: frontend/dist, bin/proxy, bin/gocm, bin/claude-structured"
 
 if [[ "$DO_RESTART" == 1 ]]; then
   echo "==> -r: handing off to ./restart.sh ${RESTART_ARGS[*]}"

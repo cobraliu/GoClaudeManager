@@ -68,7 +68,8 @@ interface Props {
   onAttach?: () => void;
   onViewChat?: () => void;
   onTerminate?: () => void;
-  onResume?: () => void;
+  onResume?: (transport?: "tmux" | "sdk") => void;
+  sdkAvailable?: boolean;
   onDelete?: () => void;
   onTaskChange?: () => void;
   onRename?: () => void;
@@ -486,6 +487,7 @@ export function SessionCard({
   onViewChat,
   onTerminate,
   onResume,
+  sdkAvailable,
   onDelete,
   onTaskChange,
   onRename,
@@ -494,6 +496,9 @@ export function SessionCard({
   const canAttach = s.status === "running" || s.status === "detached";
   const canResume = s.status === "terminated";
   const canDelete = s.status === "terminated";
+  const [resumeTransport, setResumeTransport] = useState<"tmux" | "sdk">(
+    (s.transport as "tmux" | "sdk") || "tmux",
+  );
   const canSchedule = s.status === "running" || s.status === "detached";
   const [showSchedule, setShowSchedule] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -747,7 +752,37 @@ export function SessionCard({
             <Btn color="#d9534f" label="⏹" title="Terminate session" onClick={onTerminate} />
           )}
           {canResume && onResume && (
-            <Btn color="#5cb85c" label="▶" title="Resume session" disabled={loading} onClick={onResume} />
+            <>
+              {s.tool === "claude" && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setResumeTransport((v) => (v === "tmux" ? "sdk" : "tmux"));
+                  }}
+                  title={resumeTransport === "tmux" ? "tmux 模式（点击切换为 Stream JSON）" : "Stream JSON 模式（点击切换为 tmux）"}
+                  disabled={loading}
+                  style={{
+                    background: resumeTransport === "sdk" ? "var(--accent-blue)" : "var(--btn-icon-bg)",
+                    color: resumeTransport === "sdk" ? "#fff" : "inherit",
+                    border: "none",
+                    borderRadius: 3,
+                    fontSize: 9,
+                    padding: "2px 5px",
+                    cursor: "pointer",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {resumeTransport === "sdk" ? "stream" : "tmux"}
+                </button>
+              )}
+              <Btn
+                color="#5cb85c"
+                label="▶"
+                title={`Resume session (${resumeTransport === "sdk" ? "Stream JSON" : "tmux"})`}
+                disabled={loading}
+                onClick={() => onResume(resumeTransport !== (s.transport || "tmux") ? resumeTransport : undefined)}
+              />
+            </>
           )}
           {canDelete && onDelete && (
             <Btn color="var(--btn-icon-bg)" label="🗑" title="Delete session" onClick={onDelete} />
