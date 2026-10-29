@@ -510,6 +510,10 @@ func (m *Manager) computeSDK(s *model.Session) Computed {
 	if !ok {
 		return Computed{}
 	}
+	if st.PendingAUQ != nil && m.sdkAUQAnswered(s, st.AgentSessionID, st.PendingAUQ.ToolUseID) {
+		m.SDK.Resolve(s.ID, st.PendingAUQ.ToolUseID)
+		st.PendingAUQ = nil
+	}
 	var c Computed
 	if st.PendingAUQ != nil {
 		c.TuiAuqData = st.PendingAUQ.Data
@@ -525,4 +529,46 @@ func (m *Manager) computeSDK(s *model.Session) Computed {
 		}
 	}
 	return c
+}
+
+// ClearPrompt drops the cached AUQ / plan prompt (and its hint) from the
+// session's snapshot right after it was answered, so pollers stop seeing it
+// at once instead of after the next refresh (≤2s later).
+func (m *Manager) ClearPrompt(sessionID string, plan bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.snap[sessionID]
+	if !ok {
+		return
+	}
+	if plan {
+		c.TuiPlanPending, c.TuiPlanData = false, nil
+	} else {
+		c.TuiAuqData = nil
+	}
+	c.TuiHint = nil
+	m.snap[sessionID] = c
+}
+
+// sdkAUQAnswered reports whether the transcript already holds a tool_result
+// for the pump's pending AUQ — the authoritative "no longer pending" signal
+// when the wrapper's interaction_resolved event was missed (see
+// sdktransport.Manager.Resolve).
+func (m *Manager) sdkAUQAnswered(s *model.Session, agentID, toolUseID string) bool {
+	if agentID == "" && s.AgentSessionID != nil {
+		agentID = *s.AgentSessionID
+	}
+	if agentID == "" || toolUseID == "" || m.jsonl == nil {
+		return false
+	}
+	path := jsonl.FindSessionJSONL(agentID, s.Cwd)
+	if path == "" {
+		return false
+	}
+	for _, a := range m.jsonl.AUQs(path) {
+		if a.ToolUseID == toolUseID {
+			return a.AnsweredTs != nil
+		}
+	}
+	return false
 }

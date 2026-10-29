@@ -175,6 +175,29 @@ func (m *Manager) Send(sessionID, text string) error {
 	})
 }
 
+// Resolve clears the pending AUQ / plan with this tool_use id from the pump
+// state. The wrapper's interaction_resolved event normally does this, but it
+// can be missed — the wrapper restarted and lost its pending table (respond
+// then finds nothing), or the CLI answered the tool call itself (a rejected
+// call) — and a json-out replay after a server restart would otherwise
+// resurrect every such prompt as pending.
+func (m *Manager) Resolve(sessionID, toolUseID string) {
+	m.mu.Lock()
+	p, ok := m.pumps[sessionID]
+	m.mu.Unlock()
+	if !ok || toolUseID == "" {
+		return
+	}
+	p.mu.Lock()
+	if a := p.st.PendingAUQ; a != nil && a.ToolUseID == toolUseID {
+		p.st.PendingAUQ = nil
+	}
+	if pl := p.st.PendingPlan; pl != nil && pl.ToolUseID == toolUseID {
+		p.st.PendingPlan = nil
+	}
+	p.mu.Unlock()
+}
+
 // Respond resolves the wrapper's current interaction (AUQ answer, plan
 // decision). payload shape is kind-specific — see the json-in protocol in
 // rewriteCodeCli/tui/run.tsx dispatchJsonIn.

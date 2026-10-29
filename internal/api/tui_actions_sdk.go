@@ -103,6 +103,10 @@ func sdkAnswerAUQ(d Deps, w http.ResponseWriter, s *model.Session, body auqAnswe
 		writeErr(w, http.StatusInternalServerError, "respond failed: "+err.Error())
 		return
 	}
+	d.SDK.Resolve(s.ID, pending.ToolUseID)
+	if d.Snapshot != nil {
+		d.Snapshot.ClearPrompt(s.ID, false)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "via": "sdk"})
 }
 
@@ -166,6 +170,10 @@ func sdkAuqSubmit(d Deps, w http.ResponseWriter, s *model.Session, body auqSubmi
 		writeErr(w, http.StatusInternalServerError, "respond failed: "+err.Error())
 		return
 	}
+	d.SDK.Resolve(s.ID, pending.ToolUseID)
+	if d.Snapshot != nil {
+		d.Snapshot.ClearPrompt(s.ID, false)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "via": "sdk"})
 }
 
@@ -211,6 +219,10 @@ func sdkPlanApprove(d Deps, w http.ResponseWriter, s *model.Session, body planAp
 	if err := d.SDK.Respond(s.ID, st.PendingPlan.ToolUseID, payload); err != nil {
 		writeErr(w, http.StatusInternalServerError, "respond failed: "+err.Error())
 		return
+	}
+	d.SDK.Resolve(s.ID, st.PendingPlan.ToolUseID)
+	if d.Snapshot != nil {
+		d.Snapshot.ClearPrompt(s.ID, true)
 	}
 	chosen := opts[target].Label
 	slog.Info("[plan] resolved via sdk", "decision", body.Decision, "chosen", chosen,
