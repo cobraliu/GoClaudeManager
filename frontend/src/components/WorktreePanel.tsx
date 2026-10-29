@@ -24,6 +24,11 @@ interface Props {
   sessionId: string;
   /** Tighter layout for the narrow file-tree column. */
   compact?: boolean;
+  /** Worktree the host shows changes/commits of (null = the session's cwd). */
+  viewing?: string | null;
+  /** When set, each worktree gets a "View" button that points the host's
+   *  Changes/Commits at it (null = back to the session's own directory). */
+  onView?: (wt: { path: string; branch: string } | null) => void;
 }
 
 function relTime(unix: number): string {
@@ -64,9 +69,11 @@ interface SectionProps {
   showLabel: boolean;
   compact: boolean;
   reload: () => Promise<unknown>;
+  viewing?: string | null;
+  onView?: Props["onView"];
 }
 
-function RepoSection({ sessionId, session, repo: data, label, showLabel, compact, reload: load }: SectionProps) {
+function RepoSection({ sessionId, session, repo: data, label, showLabel, compact, reload: load, viewing, onView }: SectionProps) {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // path or "add"
   const [open, setOpen] = useState(true);
@@ -231,9 +238,10 @@ function RepoSection({ sessionId, session, repo: data, label, showLabel, compact
 
       {data.worktrees.map(wt => {
         const rowBusy = busy === wt.path;
+        const viewed = !!onView && (viewing ? viewing === wt.path : wt.is_current);
         return (
           <div key={wt.path} style={{
-            border: `1px solid ${wt.is_current ? "var(--accent-blue)" : "var(--bg-hover)"}`,
+            border: `1px solid ${viewed ? "var(--accent-green)" : wt.is_current ? "var(--accent-blue)" : "var(--bg-hover)"}`,
             borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4,
             background: wt.is_current ? "rgba(56,139,253,0.06)" : "transparent",
           }}>
@@ -263,6 +271,13 @@ function RepoSection({ sessionId, session, repo: data, label, showLabel, compact
             )}
             {!wt.prunable && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {onView && (
+                  <button disabled={viewed} onClick={() => onView(wt.is_current ? null : { path: wt.path, branch: wt.branch || wt.head })}
+                    title={viewed ? "Changes / Commits below show this worktree" : "Show this worktree's changes and commits in the file panel"}
+                    style={viewed ? { ...btn(), color: "var(--accent-green)", cursor: "default" } : btn()}>
+                    {viewed ? "✓ Viewing" : "View"}
+                  </button>
+                )}
                 {!(wt.sessions.length === 1 && wt.sessions[0].id === sessionId) && (
                   <button disabled={rowBusy} onClick={() => handleOpen(wt)} style={btn("plain", rowBusy)}>
                     {wt.sessions.length > 0 ? "Open session" : "Start session"}
@@ -318,7 +333,7 @@ function RepoSection({ sessionId, session, repo: data, label, showLabel, compact
   );
 }
 
-export function WorktreePanel({ sessionId, compact = false }: Props) {
+export function WorktreePanel({ sessionId, compact = false, viewing = null, onView }: Props) {
   const [data, setData] = useState<WorktreeList | null>(null);
   const [session, setSession] = useState<SessionMeta | null>(null);
   const [loading, setLoading] = useState(true);
@@ -366,6 +381,8 @@ export function WorktreePanel({ sessionId, compact = false }: Props) {
             showLabel={multi}
             compact={compact}
             reload={load}
+            viewing={viewing}
+            onView={onView}
           />
         </div>
       ))}

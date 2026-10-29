@@ -1563,8 +1563,12 @@ export interface GitDiffResult {
   new_hash: string;
 }
 
-export function getGitInfo(sessionId: string): Promise<GitInfo> {
-  return request(`/api/sessions/${sessionId}/git`);
+// `wt` (absolute worktree path) points git-backed views at another worktree of
+// the session's repositories instead of its cwd.
+const wtQuery = (wt: string | null | undefined, sep: "?" | "&") => (wt ? `${sep}wt=${encodeURIComponent(wt)}` : "");
+
+export function getGitInfo(sessionId: string, wt?: string | null): Promise<GitInfo> {
+  return request(`/api/sessions/${sessionId}/git${wtQuery(wt, "?")}`);
 }
 
 export function searchGitCommits(sessionId: string, q: string): Promise<GitLogEntry[]> {
@@ -1833,8 +1837,8 @@ export async function gitCheckoutBranch(
   return resp.json();
 }
 
-export function getCommitDetail(sessionId: string, commitHash: string): Promise<CommitDetail> {
-  return request(`/api/sessions/${sessionId}/git/show/${commitHash}`);
+export function getCommitDetail(sessionId: string, commitHash: string, wt?: string | null): Promise<CommitDetail> {
+  return request(`/api/sessions/${sessionId}/git/show/${commitHash}${wtQuery(wt, "?")}`);
 }
 
 export interface ConversationTurn {
@@ -1950,8 +1954,8 @@ export interface TreeNode {
   children?: TreeNode[] | null;
 }
 
-export function getCodeChangedFiles(sessionId: string): Promise<ChangedFilesResponse> {
-  return request(`/api/sessions/${sessionId}/code/changed-files`);
+export function getCodeChangedFiles(sessionId: string, wt?: string | null): Promise<ChangedFilesResponse> {
+  return request(`/api/sessions/${sessionId}/code/changed-files${wtQuery(wt, "?")}`);
 }
 
 export function getCodeFile(
@@ -1959,7 +1963,8 @@ export function getCodeFile(
   path: string,
   opts?: { metaOnly?: boolean },
 ): Promise<FileData> {
-  const qs = opts?.metaOnly ? "&meta_only=true" : "";
+  // An absolute path is a file of another worktree (read-only, see getGitInfo).
+  const qs = (opts?.metaOnly ? "&meta_only=true" : "") + (path.startsWith("/") ? "&abs=true" : "");
   return request(`/api/sessions/${sessionId}/code/file?path=${encodeURIComponent(path)}${qs}`);
 }
 

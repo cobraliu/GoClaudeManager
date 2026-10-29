@@ -79,15 +79,19 @@ func gitInfo(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	if !d.Git.IsRepo(s.Cwd) {
+	root, ok := gitRootParam(w, r, s)
+	if !ok {
+		return
+	}
+	if root == s.Cwd && !d.Git.IsRepo(s.Cwd) {
 		d.Git.Init(r.Context(), s.Cwd)
 	}
-	allLog := nonNilCommits(d.Git.Log(s.Cwd, 10000))
+	allLog := nonNilCommits(d.Git.Log(root, 10000))
 	gitignore := ""
-	if b, err := os.ReadFile(filepath.Join(s.Cwd, ".gitignore")); err == nil {
+	if b, err := os.ReadFile(filepath.Join(root, ".gitignore")); err == nil {
 		gitignore = string(b)
 	}
-	remote := d.Git.GetRemote(s.Cwd)
+	remote := d.Git.GetRemote(root)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"is_repo":   true,
 		"log":       allLog,
@@ -548,12 +552,20 @@ func gitRollback(d Deps, w http.ResponseWriter, r *http.Request) {
 // ── GET /{id}/git/show/{commit_hash} ─────────────────────────────────────────
 
 func gitShow(d Deps, w http.ResponseWriter, r *http.Request) {
-	s := gitRequireRepo(d, w, r)
+	s := resolveOwned(d, w, r)
 	if s == nil {
 		return
 	}
+	root, ok := gitRootParam(w, r, s)
+	if !ok {
+		return
+	}
+	if !d.Git.IsRepo(root) {
+		writeErr(w, http.StatusBadRequest, "not a git repo")
+		return
+	}
 	commitHash := chi.URLParam(r, "commit_hash")
-	writeJSON(w, http.StatusOK, d.Git.ShowCommit(r.Context(), s.Cwd, commitHash))
+	writeJSON(w, http.StatusOK, d.Git.ShowCommit(r.Context(), root, commitHash))
 }
 
 // ── GET /{id}/git/file-log ───────────────────────────────────────────────────

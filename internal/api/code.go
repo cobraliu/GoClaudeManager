@@ -69,7 +69,10 @@ func codeChangedFiles(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		return
 	}
-	cwd := s.Cwd
+	cwd, ok := gitRootParam(w, r, s)
+	if !ok {
+		return
+	}
 
 	ctx := r.Context()
 	out := codeGitOut(d, ctx, cwd, "status", "--porcelain")
@@ -299,10 +302,25 @@ func codeFile(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	metaOnly := r.URL.Query().Get("meta_only") == "true"
 
-	target, err := fsutil.SafePath(cwd, path)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "Invalid path")
-		return
+	var target string
+	if r.URL.Query().Get("abs") == "true" {
+		// A file of another worktree (read-only view from the file panel's
+		// worktree mode): git runs in that worktree, path becomes relative.
+		abs := filepath.Clean(path)
+		root, ok := scopedGitRoot(r.Context(), s, filepath.Dir(abs))
+		rel, err := filepath.Rel(root, abs)
+		if !ok || err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			writeErr(w, http.StatusBadRequest, "Invalid path")
+			return
+		}
+		cwd, path, target = root, filepath.ToSlash(rel), abs
+	} else {
+		var err error
+		target, err = fsutil.SafePath(cwd, path)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "Invalid path")
+			return
+		}
 	}
 	fi, err := os.Stat(target)
 	if err != nil {

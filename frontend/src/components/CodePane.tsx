@@ -1159,7 +1159,7 @@ function CommitMiniRow({ entry, onClick }: { entry: GitLogEntry; onClick: () => 
 
 const COMMITS_SHOW_N = 5;
 
-function RecentCommitsPanel({ sessionId }: { sessionId: string }) {
+function RecentCommitsPanel({ sessionId, wt }: { sessionId: string; wt?: string | null }) {
   const [log, setLog] = useState<GitLogEntry[]>([]);
   const [isRepo, setIsRepo] = useState(true);
   const [loaded, setLoaded] = useState(false);
@@ -1172,7 +1172,7 @@ function RecentCommitsPanel({ sessionId }: { sessionId: string }) {
     let mounted = true;
     const poll = async () => {
       try {
-        const info = await getGitInfo(sessionId);
+        const info = await getGitInfo(sessionId, wt);
         if (!mounted) return;
         setIsRepo(info.is_repo);
         setLog(info.log ?? []);
@@ -1183,7 +1183,7 @@ function RecentCommitsPanel({ sessionId }: { sessionId: string }) {
     poll();
     const id = setInterval(poll, 15000);
     return () => { mounted = false; clearInterval(id); };
-  }, [sessionId, pageVisible]);
+  }, [sessionId, wt, pageVisible]);
 
   // Hide entirely until first fetch settles; avoids flashing "No commits" in non-repo cwd.
   if (!loaded) return null;
@@ -1216,7 +1216,7 @@ function RecentCommitsPanel({ sessionId }: { sessionId: string }) {
         )}
       </div>
       {detailEntry && (
-        <CommitDetailModal sessionId={sessionId} entry={detailEntry} onClose={() => setDetailEntry(null)} />
+        <CommitDetailModal sessionId={sessionId} entry={detailEntry} wt={wt} onClose={() => setDetailEntry(null)} />
       )}
       {showFullPanel && (
         <GitPanel sessionId={sessionId} onClose={() => setShowFullPanel(false)} />
@@ -1858,6 +1858,8 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
   const isHtml = isHtmlFile(name);
   const isJsonl = isJsonlFile(name);
   const [mdPreview, setMdPreview] = useState(isMd || isCsv || isHtml || isJsonl);
+  // Absolute path = a file of another worktree (file panel worktree view): read-only.
+  const otherWorktreeFile = path.startsWith("/");
 
   useEffect(() => { editingRef.current = editing; }, [editing]);
 
@@ -1896,11 +1898,12 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
 
   useEffect(() => {
     let mounted = true;
+    if (otherWorktreeFile) return; // its status lives in the file panel's worktree view
     const poll = () => getCodeChangedFiles(sessionId).then(r => { if (mounted) setChangedFiles(r.files); }).catch(() => {});
     poll();
     const id = setInterval(poll, POLL_MS);
     return () => { mounted = false; clearInterval(id); };
-  }, [sessionId]);
+  }, [sessionId, otherWorktreeFile]);
 
   const showSqlite = isSqliteFile(name);
   const showColumnar = isColumnarFile(name);
@@ -1933,7 +1936,7 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
     };
   }, [fileData, sourceFmt, convertTarget, conversion]);
 
-  const canEdit = !!fileData && !fileData.is_binary && !showSqlite && !showColumnar && !showArchive && !showPdf && !showImage;
+  const canEdit = !otherWorktreeFile && !!fileData && !fileData.is_binary && !showSqlite && !showColumnar && !showArchive && !showPdf && !showImage;
   const isModified = editing && !!fileData && editBuffer !== fileData.content;
 
   useEffect(() => {
@@ -2026,7 +2029,7 @@ export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full
         viewMode={viewMode}
         setViewMode={setViewMode}
         noDiff={noDiff}
-        onDownload={!showSqlite ? onDownload : undefined}
+        onDownload={!showSqlite && !otherWorktreeFile ? onDownload : undefined}
         canEdit={canEdit}
         editing={editing}
         saving={saving}
@@ -2563,6 +2566,10 @@ export function CodePane({
   // ── Toolbar / action state (ported from FileEditorModal) ───────────────────
   type ToolForm = null | "search" | "upload" | "historySearch" | "worktrees";
   const [toolForm, setToolForm] = useState<ToolForm>(null);
+  // Worktree whose Changes / Commits are shown instead of the session's cwd
+  // (picked in the Worktrees tool). Its files open read-only by absolute path.
+  const [viewWt, setViewWt] = useState<{ path: string; branch: string } | null>(null);
+  const viewWtPath = viewWt?.path ?? null;
   const [toolError, setToolError] = useState("");
   const [toolBusy, setToolBusy] = useState(false);
   // Search
@@ -2710,7 +2717,7 @@ export function CodePane({
     let mounted = true;
     const poll = async () => {
       try {
-        const resp = await getCodeChangedFiles(sessionId);
+        const resp = await getCodeChangedFiles(sessionId, viewWtPath);
         if (!mounted) return;
         const files = resp.files;
         setChangedFiles(files);
@@ -2725,7 +2732,7 @@ export function CodePane({
         if (!sameMembers) setFilesRefreshKey(k => k + 1);
         prevChangedRef.current = nextSet;
 
-        if (treeOnly) return; // FileViewerPane handles its own refresh
+        if (treeOnly || viewWtPath) return; // FileViewerPane handles its own refresh; no auto-follow into another worktree
 
         if (!autoFollowRef.current) {
           if (selectedEntry && !isImage(selectedEntry.name) && !isMedia(selectedEntry.name) && !selectedEntry.is_sqlite && !isColumnarFile(selectedEntry.name) && !selectedEntry.is_archive) {
@@ -2758,7 +2765,9 @@ export function CodePane({
     poll();
     const id = setInterval(poll, POLL_MS);
     return () => { mounted = false; clearInterval(id); };
-  }, [sessionId, loadFile, treeOnly, selectedEntry]);
+  }, [sessionId, loadFile, treeOnly, selectedEntry, viewWtPath]);
+
+  useEffect(() => { setChangedFiles([]); setChangedWarnings([]); }, [viewWtPath]);
 
   useEffect(() => {
     setChangedFiles([]); setSelectedEntry(null); setFileData(null); setLastClicked(null); setPendingCreate(null);
@@ -2769,7 +2778,8 @@ export function CodePane({
     setFilesRefreshKey(0);
   }, [sessionId]);
 
-  const changedSet = new Set(changedFiles.map((f) => f.path));
+  // The FILES tree is the session's cwd: only mark it with the cwd's own changes.
+  const changedSet = new Set(viewWtPath ? [] : changedFiles.map((f) => f.path));
   const highlightedPath = treeOnly ? (selectedPathExternal ?? null) : (selectedEntry?.path ?? null);
   const selectedChanged = changedFiles.find((f) => f.path === (treeOnly ? selectedPathExternal : selectedEntry?.path));
 
@@ -2989,7 +2999,7 @@ export function CodePane({
 
           {toolForm === "worktrees" && (
             <div style={{ borderBottom: "1px solid var(--bg-hover)", maxHeight: "55%", overflowY: "auto", flexShrink: 0 }}>
-              <WorktreePanel sessionId={sessionId} compact />
+              <WorktreePanel sessionId={sessionId} compact viewing={viewWtPath} onView={setViewWt} />
             </div>
           )}
 
@@ -3098,6 +3108,13 @@ export function CodePane({
           <div style={{ borderTop: "1px solid var(--bg-hover)", flexShrink: 0 }}>
             <div style={{ padding: "5px 10px", fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span>Changes ({changedFiles.length})</span>
+              {viewWt && (
+                <span title={viewWt.path} style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0, textTransform: "none", letterSpacing: 0, color: "var(--accent-green)" }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>⑂ {viewWt.branch}</span>
+                  <button onClick={() => setViewWt(null)} title="Back to this session's directory"
+                    style={{ fontSize: 10, padding: "0 4px", background: "transparent", color: "var(--text-muted)", border: "none", cursor: "pointer" }}>✕</button>
+                </span>
+              )}
               {!treeOnly && (
                 <button
                   onClick={() => setAutoFollow((v) => !v)}
@@ -3110,7 +3127,7 @@ export function CodePane({
             </div>
             <ChangedFilesWarningsBanner
               sessionId={sessionId}
-              warnings={changedWarnings}
+              warnings={viewWtPath ? [] : changedWarnings}
               onApplied={() => setFilesRefreshKey(k => k + 1)}
             />
             {changedFiles.length === 0 ? (
@@ -3122,8 +3139,9 @@ export function CodePane({
                     key={node.path}
                     node={node}
                     depth={0}
-                    selectedPath={highlightedPath}
-                    onClickFile={(_, path) => {
+                    selectedPath={viewWtPath ? (highlightedPath?.startsWith(viewWtPath + "/") ? highlightedPath.slice(viewWtPath.length + 1) : null) : highlightedPath}
+                    onClickFile={(_, rel) => {
+                      const path = viewWtPath ? `${viewWtPath}/${rel}` : rel;
                       if (treeOnly && onFileSelect) {
                         selectedRef.current = path;
                         onFileSelect(path, "split");
@@ -3141,7 +3159,7 @@ export function CodePane({
           </div>
 
           {/* Recent commits (bottom) */}
-          <RecentCommitsPanel sessionId={sessionId} />
+          <RecentCommitsPanel sessionId={sessionId} wt={viewWtPath} />
         </div>
       )}
 

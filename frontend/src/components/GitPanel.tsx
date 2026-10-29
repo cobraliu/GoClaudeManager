@@ -283,8 +283,8 @@ export function DiffViewer({ files, title, hashes, onClose, zIndex = 5000 }: { f
 
 /* ─── Commit detail modal ─── */
 export function CommitDetailModal({
-  sessionId, entry, onClose,
-}: { sessionId: string; entry: GitLogEntry; onClose: () => void }) {
+  sessionId, entry, onClose, wt,
+}: { sessionId: string; entry: GitLogEntry; onClose: () => void; wt?: string | null }) {
   const [fullMessage, setFullMessage] = useState<string | null>(null);
   const [diffFiles, setDiffFiles] = useState<GitDiffFile[] | null>(null);
   const [loadingDiff, setLoadingDiff] = useState(false);
@@ -292,16 +292,16 @@ export function CommitDetailModal({
 
   // Fetch full message on open
   useEffect(() => {
-    getCommitDetail(sessionId, entry.hash)
+    getCommitDetail(sessionId, entry.hash, wt)
       .then((d) => setFullMessage(d.message ?? entry.subject))
       .catch(() => setFullMessage(entry.subject));
-  }, [sessionId, entry.hash]);
+  }, [sessionId, entry.hash, wt]);
 
   const handleShowChanges = async () => {
     setLoadingDiff(true);
     setErr(null);
     try {
-      const detail = await getCommitDetail(sessionId, entry.hash);
+      const detail = await getCommitDetail(sessionId, entry.hash, wt);
       if (detail.files.length === 0) setErr("No file changes in this commit.");
       else setDiffFiles(detail.files);
     } catch (e) {

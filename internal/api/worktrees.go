@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -271,4 +272,45 @@ func removeWorktree(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// scopedGitRoot resolves dir (an absolute directory at or under a git work
+// tree) to that work tree's root, provided its repository is in the session's
+// scope: the main worktree is cwd itself or below it. Linked worktrees of such
+// a repository may live anywhere (by default <cwd>.worktrees/<branch>). Lets
+// the file panel show the changes / commits / diffs of another worktree.
+func scopedGitRoot(ctx context.Context, s *model.Session, dir string) (string, bool) {
+	if !filepath.IsAbs(dir) {
+		return "", false
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse",
+		"--path-format=absolute", "--show-toplevel", "--git-common-dir").Output()
+	if err != nil {
+		return "", false
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 || filepath.Base(lines[1]) != ".git" {
+		return "", false // bare repositories have no work tree to show
+	}
+	main, cwd := git.RealPath(filepath.Dir(lines[1])), git.RealPath(s.Cwd)
+	if main != cwd && !strings.HasPrefix(main, cwd+string(filepath.Separator)) {
+		return "", false
+	}
+	return lines[0], true
+}
+
+// gitRootParam returns the directory git-backed views run in: the session's
+// cwd, or the worktree named by the "wt" query parameter (see scopedGitRoot).
+// Writes a 400 and returns ok=false when "wt" is out of scope.
+func gitRootParam(w http.ResponseWriter, r *http.Request, s *model.Session) (string, bool) {
+	wt := strings.TrimSpace(r.URL.Query().Get("wt"))
+	if wt == "" {
+		return s.Cwd, true
+	}
+	root, ok := scopedGitRoot(r.Context(), s, wt)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "not a worktree of this session's repositories: "+wt)
+		return "", false
+	}
+	return root, true
 }
