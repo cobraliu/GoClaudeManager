@@ -328,9 +328,11 @@ function ProcsSection({
     finally { setLoaded(true); }
   }, [sessionId]);
 
+  // Fetch only while the section is expanded and the tab visible — no
+  // background request just to keep the count badge current.
   useEffect(() => {
-    refresh();
     if (collapsed || !pageVisible) return;
+    refresh();
     const id = setInterval(refresh, PROCS_POLL_MS);
     return () => clearInterval(id);
   }, [refresh, collapsed, pageVisible]);

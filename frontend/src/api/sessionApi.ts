@@ -27,8 +27,6 @@ export interface SessionMeta {
   has_new_output: boolean;
   is_streaming: boolean;
   scheduled_tasks: ScheduledTask[];
-  /** Search results only: matched via conversation text, not name/path/title. */
-  conversation_match?: boolean;
   git_auto_commit: boolean;
   git_repo_url: string | null;
   tool: "claude" | "cursor" | "codex";
@@ -67,6 +65,31 @@ function getToken(): string {
   return localStorage.getItem("token") || "";
 }
 
+// In-flight GETs keyed by URL+token. Pollers fire on fixed intervals; when the
+// server is slow for one session, each tick used to open ANOTHER identical
+// request, the browser's ~6-connection-per-host pool filled up, and every
+// other request (search, clicks) queued behind them as "pending". A GET whose
+// identical twin is still in flight now joins it instead of opening a new
+// connection. The body is shared as text and parsed per caller, so callers
+// never share (and mutate) one object.
+const inflightGets = new Map<string, Promise<{ status: number; text: string }>>();
+
+// A GET that has not answered in this long is abandoned so its connection
+// slot is released (no polled endpoint legitimately takes this long).
+const GET_TIMEOUT_MS = 60_000;
+
+function fetchText(url: string, init: RequestInit): Promise<{ status: number; text: string }> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), GET_TIMEOUT_MS);
+  return fetch(url, { ...init, signal: ctl.signal })
+    .then(async (resp) => ({ status: resp.status, text: resp.status === 204 ? "" : await resp.text() }))
+    .catch((e) => {
+      if (ctl.signal.aborted) throw new Error(`request timed out after ${GET_TIMEOUT_MS / 1000}s`);
+      throw e;
+    })
+    .finally(() => clearTimeout(timer));
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
@@ -76,33 +99,50 @@ async function request<T>(
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string>) || {}),
   };
+  let token = "";
   if (!skipAuth) {
-    const token = getToken();
+    token = getToken();
     if (!token) {
       throw new Error("not logged in");
     }
     headers["Authorization"] = `Bearer ${token}`;
   }
-  const resp = await fetch(apiPath(path), { ...init, headers });
-  if (resp.status === 401 && !skipAuth) {
+  const url = apiPath(path);
+  const method = (init?.method || "GET").toUpperCase();
+  let res: { status: number; text: string };
+  if (method === "GET" && !init?.body && !init?.signal) {
+    const key = `${token}\n${url}`;
+    let p = inflightGets.get(key);
+    if (!p) {
+      p = fetchText(url, { ...init, headers });
+      inflightGets.set(key, p);
+      const done = () => { if (inflightGets.get(key) === p) inflightGets.delete(key); };
+      p.then(done, done);
+    }
+    res = await p;
+  } else {
+    const resp = await fetch(url, { ...init, headers });
+    res = { status: resp.status, text: resp.status === 204 ? "" : await resp.text() };
+  }
+  if (res.status === 401 && !skipAuth) {
     localStorage.removeItem("token");
     localStorage.removeItem("username");
     localStorage.removeItem("role");
     window.location.reload();
     throw new Error("unauthorized");
   }
-  if (!resp.ok) {
-    const text = await resp.text();
+  if (res.status < 200 || res.status >= 300) {
+    const text = res.text;
     let msg = text;
     try {
       const j = JSON.parse(text);
       if (typeof j?.detail === "string") msg = j.detail;
       else if (Array.isArray(j?.detail)) msg = j.detail.map((d: { msg?: string }) => d?.msg).filter(Boolean).join("; ") || text;
     } catch { /* not JSON, use raw text */ }
-    throw new Error(msg || `HTTP ${resp.status}`);
+    throw new Error(msg || `HTTP ${res.status}`);
   }
-  if (resp.status === 204) return undefined as unknown as T;
-  return resp.json();
+  if (res.status === 204) return undefined as unknown as T;
+  return JSON.parse(res.text) as T;
 }
 
 // AskUserQuestion structured answer

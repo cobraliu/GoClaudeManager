@@ -3,6 +3,7 @@ package jsonl
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -294,9 +295,10 @@ func TestIncrementalMatchesOneShot(t *testing.T) {
 func scanFile(t *testing.T, p string) *cacheEntry {
 	t.Helper()
 	c := NewCache()
-	c.mu.Lock()
-	e := c.sync(p)
-	c.mu.Unlock()
+	e := c.acquire(p)
+	if e != nil {
+		e.mu.Unlock()
+	}
 	if e == nil {
 		t.Fatalf("sync returned nil for %s", p)
 	}
@@ -328,6 +330,10 @@ func auqsFromFile(t *testing.T, p string) []AUQ {
 	auqs, err := listAUQsPath(p)
 	if err != nil {
 		t.Fatalf("auqs: %v", err)
+	}
+	// The incremental cache must agree with the full scan.
+	if cached := NewCache().AUQs(p); !reflect.DeepEqual(cached, auqs) {
+		t.Fatalf("cache AUQs = %+v, full scan = %+v", cached, auqs)
 	}
 	return auqs
 }
@@ -690,4 +696,51 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b)
+}
+
+// TestEnrichFastNeverBlocks: a small never-seen transcript is parsed inline;
+// one whose entry is busy (another request parsing it) yields the last
+// snapshot instead of waiting; a large never-seen one is parsed in the
+// background.
+func TestEnrichFastNeverBlocks(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "s.jsonl")
+	writeLines(t, p, []string{userLine})
+	c := NewCache()
+	if r := c.EnrichFast(p); r.Title == nil {
+		t.Fatal("small transcript not parsed inline")
+	}
+
+	c.mu.Lock()
+	e := c.entries[p]
+	c.mu.Unlock()
+	e.mu.Lock() // simulate a long parse in progress
+	done := make(chan EnrichResult, 1)
+	go func() { done <- c.EnrichFast(p) }()
+	select {
+	case r := <-done:
+		if r.Title == nil {
+			t.Fatal("busy entry: snapshot not returned")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("EnrichFast blocked on a busy entry")
+	}
+	e.mu.Unlock()
+
+	big := filepath.Join(dir, "big.jsonl")
+	lines := make([]string, 0, 1+enrichSyncLimit/len(userLine))
+	for n := 0; n <= enrichSyncLimit; n += len(userLine) + 1 {
+		lines = append(lines, userLine)
+	}
+	writeLines(t, big, lines)
+	if r := c.EnrichFast(big); r.Title != nil {
+		t.Fatal("large never-seen transcript parsed inline")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for c.EnrichFast(big).Title == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("background parse never completed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

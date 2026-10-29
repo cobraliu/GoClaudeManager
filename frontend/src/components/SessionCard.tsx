@@ -652,9 +652,6 @@ export function SessionCard({
           ) : (
             <strong style={{ fontSize: 13, cursor: "text", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title="Click to rename" onClick={startEdit}>{s.project}</strong>
           )}
-          {s.conversation_match && (
-            <span title="只在对话内容中匹配到搜索词" style={{ fontSize: 9, color: "var(--text-muted)", border: "1px solid var(--border)", padding: "0 4px", borderRadius: 3, flexShrink: 0, whiteSpace: "nowrap" }}>对话命中</span>
-          )}
           {s.is_streaming && <span className="streaming-dot" title="Terminal is outputting" />}
           {!s.is_streaming && s.has_new_output && <span className="new-output-dot" title="New output since last view" />}
           {s.tool === "cursor" ? (

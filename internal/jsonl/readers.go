@@ -305,64 +305,77 @@ func listAUQsPath(jsonlPath string) ([]AUQ, error) {
 	}
 	defer f.Close()
 
-	asks := map[string]*AUQ{}
-	var order []string
-
+	st := newAUQState()
 	sc := newScanner(f)
 	for sc.Scan() {
-		d, ok := decodeLine(sc.Bytes())
-		if !ok {
-			continue
-		}
-		switch d.Type {
-		case "assistant":
-			if d.Message == nil {
-				continue
-			}
-			for _, b := range d.Message.blocks() {
-				if b.Type != "tool_use" || b.Name != "AskUserQuestion" {
-					continue
-				}
-				tuid := b.ID
-				if tuid == "" {
-					continue
-				}
-				if _, seen := asks[tuid]; seen {
-					continue
-				}
-				questions := decodeQuestions(b.Input)
-				asks[tuid] = &AUQ{ToolUseID: tuid, Ts: parseISOTs(d.Timestamp), Questions: questions}
-				order = append(order, tuid)
-			}
-		case "user":
-			if d.Message == nil {
-				continue
-			}
-			matched := ""
-			for _, b := range d.Message.blocks() {
-				if b.Type == "tool_result" && b.ToolUseID != "" {
-					if _, ok := asks[b.ToolUseID]; ok {
-						matched = b.ToolUseID
-						break
-					}
-				}
-			}
-			if matched == "" {
-				continue
-			}
-			ts := parseISOTs(d.Timestamp)
-			asks[matched].AnsweredTs = &ts
-			if ans := d.toolUseResultAnswers(); ans != nil {
-				asks[matched].Answers = ans
-			}
+		if d, ok := decodeLine(sc.Bytes()); ok {
+			st.feed(&d)
 		}
 	}
+	return st.result(), sc.Err()
+}
 
-	out := make([]AUQ, 0, len(order))
-	for _, tuid := range order {
-		out = append(out, *asks[tuid])
+// auqState accumulates AskUserQuestion rounds line by line (shared by the
+// full-scan ListAUQs and the incremental Cache).
+type auqState struct {
+	asks  map[string]*AUQ
+	order []string
+}
+
+func newAUQState() *auqState { return &auqState{asks: map[string]*AUQ{}} }
+
+func (s *auqState) feed(d *rawEntry) {
+	switch d.Type {
+	case "assistant":
+		if d.Message == nil {
+			return
+		}
+		for _, b := range d.Message.blocks() {
+			if b.Type != "tool_use" || b.Name != "AskUserQuestion" {
+				continue
+			}
+			tuid := b.ID
+			if tuid == "" {
+				continue
+			}
+			if _, seen := s.asks[tuid]; seen {
+				continue
+			}
+			questions := decodeQuestions(b.Input)
+			s.asks[tuid] = &AUQ{ToolUseID: tuid, Ts: parseISOTs(d.Timestamp), Questions: questions}
+			s.order = append(s.order, tuid)
+		}
+	case "user":
+		if d.Message == nil {
+			return
+		}
+		matched := ""
+		for _, b := range d.Message.blocks() {
+			if b.Type == "tool_result" && b.ToolUseID != "" {
+				if _, ok := s.asks[b.ToolUseID]; ok {
+					matched = b.ToolUseID
+					break
+				}
+			}
+		}
+		if matched == "" {
+			return
+		}
+		ts := parseISOTs(d.Timestamp)
+		s.asks[matched].AnsweredTs = &ts
+		if ans := d.toolUseResultAnswers(); ans != nil {
+			s.asks[matched].Answers = ans
+		}
 	}
-	return out, sc.Err()
+}
+
+// result returns the rounds in chronological order, as copies.
+func (s *auqState) result() []AUQ {
+	out := make([]AUQ, 0, len(s.order))
+	for _, tuid := range s.order {
+		out = append(out, *s.asks[tuid])
+	}
+	return out
 }
 
 // decodeQuestions decodes input.questions, which may be a list or a

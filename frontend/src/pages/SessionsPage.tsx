@@ -1537,6 +1537,9 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
   const [inlineView, setInlineView] = useState<"git" | "jsonl" | "memory" | null>(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
+  // The submitted query: the list is searched when Enter is pressed (or the
+  // box is cleared), not on every keystroke.
+  const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [restarting, setRestarting] = useState(false);
   const [showBrowse, setShowBrowse] = useState(false);
@@ -1632,7 +1635,9 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
       const raw = localStorage.getItem("dockOpen");
       if (raw) {
         const p = JSON.parse(raw);
-        return { auqs: !!p.auqs, tasks: !!p.tasks, goals: !!p.goals, procs: !!p.procs };
+        // Procs is never restored: its process-tree scan is only worth paying
+        // for once the user asks for it by clicking Procs.
+        return { auqs: !!p.auqs, tasks: !!p.tasks, goals: !!p.goals, procs: false };
       }
     } catch { /* ignore */ }
     return { auqs: false, tasks: false, goals: false, procs: false };
@@ -1736,10 +1741,10 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
   // mousemove handler — visible as drag "sticking" over HTML / PDF previews.
   const [resizeDragActive, setResizeDragActive] = useState(false);
 
-  const searchRef2 = useRef(search);
-  searchRef2.current = search;
+  const searchRef2 = useRef(query);
+  searchRef2.current = query;
 
-  // q defaults to the current search box text, so a refresh after an action
+  // q defaults to the submitted search query, so a refresh after an action
   // (create, stop, delete…) keeps the list filtered instead of silently
   // showing every session under a still-filled search box.
   const refresh = useCallback(async (q: string = searchRef2.current) => {
@@ -1908,18 +1913,17 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId]);
 
-  // Debounced search: send query to backend
+  // Submitted search: send query to backend
   useEffect(() => {
     setPage(0);
-    const timer = setTimeout(() => refresh(search), 300);
-    return () => clearTimeout(timer);
-  }, [search, refresh]);
+    refresh(query);
+  }, [query, refresh]);
 
   const isActiveSession = (s: SessionMeta) => s.status === "running" || s.status === "detached";
   const toolFilteredSessions = sessions.filter((s) => enabledTools.includes(s.tool));
   // Listed in ASCII order (project, then name). While searching every match
   // is shown — the active-only filter would hide stopped hits.
-  const searching = search.trim() !== "";
+  const searching = query.trim() !== "";
   const visibleSessions = (searching || showAllSessions ? toolFilteredSessions : toolFilteredSessions.filter(isActiveSession))
     .slice()
     .sort((a, b) => asciiCmp(a.project, b.project) || asciiCmp(a.name, b.name));
@@ -2402,9 +2406,15 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
         {/* search + active filter */}
         <div style={{ padding: "8px 10px 4px", flexShrink: 0, display: "flex", flexDirection: "column", gap: 5 }}>
           <input
-            placeholder="Search sessions..."
+            placeholder="Search sessions... (Enter)"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              if (e.target.value.trim() === "") setQuery("");
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) setQuery(search.trim());
+            }}
             style={{ ...inputStyle, width: "100%", padding: "7px 10px" }}
           />
           <button
@@ -2471,7 +2481,7 @@ export function SessionsPage({ username, onLogout, onSwitchToAdmin, onOpenTool, 
                 marginTop: 40,
               }}
             >
-              {search ? "No matching sessions." : !showAllSessions ? "No active sessions." : "No sessions yet."}
+              {query ? "No matching sessions." : !showAllSessions ? "No active sessions." : "No sessions yet."}
             </p>
           )}
         </div>

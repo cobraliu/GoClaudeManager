@@ -18,7 +18,10 @@
 package procmon
 
 import (
+	"bytes"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -104,11 +107,11 @@ func (s *Sampler) Sample(sessionID string, rootPID, tailLines int) Snapshot {
 		tailLines = 200
 	}
 
-	byPID, children, ok := processTable()
+	present, children, ok := processTable()
 	if !ok {
 		return snap
 	}
-	if _, ok := byPID[rootPID]; !ok {
+	if !present[rootPID] {
 		// Root already gone — nothing to report, but still age out the cache.
 		s.storePrev(sessionID, now, nil)
 		return snap
@@ -126,9 +129,12 @@ func (s *Sampler) Sample(sessionID string, rootPID, tailLines int) Snapshot {
 
 	curCPU := make(map[int]float64, len(pids))
 	for _, pid := range pids {
-		p, ok := byPID[pid]
-		if !ok {
+		if !present[pid] {
 			continue
+		}
+		p, err := process.NewProcess(int32(pid))
+		if err != nil {
+			continue // exited since the table was read
 		}
 		d := readDetail(p, nowMillis)
 		curCPU[pid] = d.cpuSeconds
@@ -163,17 +169,24 @@ func (s *Sampler) Sample(sessionID string, rootPID, tailLines int) Snapshot {
 	return snap
 }
 
-// processTable enumerates every process via gopsutil and returns a pid→handle
-// map plus the parent→children map. Only Ppid() is read here (one cheap call
-// per process); the fuller per-process detail is fetched lazily in readDetail,
-// so only the session's descendants pay that cost — not every process on the
-// host. Returns ok=false if the process list can't be read at all.
-func processTable() (map[int]*process.Process, map[int][]int, bool) {
+// processTable returns the set of live pids plus the parent→children map.
+// Only the session's descendants get a gopsutil handle afterwards (in Sample),
+// so the per-host cost is just this table. On Linux it is read straight from
+// /proc/<pid>/stat: gopsutil's enumeration costs ~1ms per process, i.e. 10s+
+// per poll on a host with thousands of processes, which kept the polling panel
+// requests piling up and starved the browser's connection pool. Returns
+// ok=false if the process list can't be read at all.
+func processTable() (map[int]bool, map[int][]int, bool) {
+	if runtime.GOOS == "linux" {
+		if present, children, ok := procStatTable(); ok {
+			return present, children, true
+		}
+	}
 	all, err := process.Processes()
 	if err != nil {
 		return nil, nil, false
 	}
-	byPID := make(map[int]*process.Process, len(all))
+	present := make(map[int]bool, len(all))
 	children := map[int][]int{}
 	for _, p := range all {
 		ppid, err := p.Ppid()
@@ -181,10 +194,47 @@ func processTable() (map[int]*process.Process, map[int][]int, bool) {
 			continue // process vanished mid-walk (normal churn)
 		}
 		pid := int(p.Pid)
-		byPID[pid] = p
+		present[pid] = true
 		children[int(ppid)] = append(children[int(ppid)], pid)
 	}
-	return byPID, children, true
+	return present, children, true
+}
+
+// procStatTable builds the pid set and parent→children map from
+// /proc/<pid>/stat ("pid (comm) state ppid …"; comm may itself contain spaces
+// or parentheses, so the fields are taken after the LAST ')').
+func procStatTable() (map[int]bool, map[int][]int, bool) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, nil, false
+	}
+	present := make(map[int]bool, len(entries))
+	children := map[int][]int{}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + e.Name() + "/stat")
+		if err != nil {
+			continue // process vanished mid-walk (normal churn)
+		}
+		k := bytes.LastIndexByte(b, ')')
+		if k < 0 {
+			continue
+		}
+		f := bytes.Fields(b[k+1:])
+		if len(f) < 2 {
+			continue
+		}
+		ppid, err := strconv.Atoi(string(f[1]))
+		if err != nil {
+			continue
+		}
+		present[pid] = true
+		children[ppid] = append(children[ppid], pid)
+	}
+	return present, children, len(present) > 0
 }
 
 // readDetail gathers the resource fields for a single process. Each accessor is

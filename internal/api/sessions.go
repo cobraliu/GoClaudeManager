@@ -149,15 +149,13 @@ func listSessions(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items, convOnly := filterSessions(d, items, r.URL.Query().Get("q"))
+	items = filterSessions(d, items, r.URL.Query().Get("q"))
 	ids := sessionIDs(items)
 	newOut, _ := d.Store.GetHasNewOutputBulk(ids, who.Username)
 	taskMap, _ := d.Store.ListPendingTasksForSessions(ids)
 	views := make([]model.SessionView, 0, len(items))
 	for _, s := range items {
-		v := d.enrich(s, newOut[s.ID], taskViews(taskMap[s.ID]))
-		v.ConversationMatch = convOnly[s.ID]
-		views = append(views, v)
+		views = append(views, d.enrich(s, newOut[s.ID], taskViews(taskMap[s.ID])))
 	}
 	writeJSON(w, http.StatusOK, model.SessionListResponse{Items: views, Total: len(views)})
 }
@@ -168,12 +166,10 @@ func listAllSessions(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items, convOnly := filterSessions(d, items, r.URL.Query().Get("q"))
+	items = filterSessions(d, items, r.URL.Query().Get("q"))
 	views := make([]model.SessionView, 0, len(items))
 	for _, s := range items {
-		v := d.enrich(s, false, nil)
-		v.ConversationMatch = convOnly[s.ID]
-		views = append(views, v)
+		views = append(views, d.enrich(s, false, nil))
 	}
 	writeJSON(w, http.StatusOK, model.SessionListResponse{Items: views, Total: len(views)})
 }
@@ -264,8 +260,7 @@ func listGoals(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": nil, "history": []any{}})
 		return
 	}
-	res, _ := jsonl.ReadGoals(chatSID, s.Cwd)
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusOK, d.JSONL.Goals(jsonl.FindSessionJSONL(chatSID, s.Cwd)))
 }
 
 func listTodos(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -278,8 +273,7 @@ func listTodos(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": []any{}, "history": []any{}})
 		return
 	}
-	res, _ := jsonl.GetTodoPlans(chatSID, s.Cwd)
-	writeJSON(w, http.StatusOK, res)
+	writeJSON(w, http.StatusOK, d.JSONL.TodoPlans(jsonl.FindSessionJSONL(chatSID, s.Cwd)))
 }
 
 func statusBar(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -292,8 +286,9 @@ func statusBar(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"todos_active": []any{}, "goal_active": nil})
 		return
 	}
-	plans, _ := jsonl.GetTodoPlans(chatSID, s.Cwd)
-	goals, _ := jsonl.ReadGoals(chatSID, s.Cwd)
+	path := jsonl.FindSessionJSONL(chatSID, s.Cwd)
+	plans := d.JSONL.TodoPlans(path)
+	goals := d.JSONL.Goals(path)
 	writeJSON(w, http.StatusOK, map[string]any{"todos_active": plans.Active, "goal_active": goals.Active})
 }
 
@@ -307,11 +302,7 @@ func listAUQs(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	auqs, _ := jsonl.ListAUQs(chatSID, s.Cwd)
-	if auqs == nil {
-		auqs = []jsonl.AUQ{}
-	}
-	writeJSON(w, http.StatusOK, auqs)
+	writeJSON(w, http.StatusOK, d.JSONL.AUQs(jsonl.FindSessionJSONL(chatSID, s.Cwd)))
 }
 
 func listTasks(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -338,7 +329,7 @@ func getConversation(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s.Tool == "cursor" {
 		turns, _ = jsonl.GetCursorConversation(chatSID, s.Cwd, fromTs)
 	} else {
-		turns, _ = jsonl.GetConversation(chatSID, s.Cwd, fromTs)
+		turns = d.JSONL.Conversation(jsonl.FindSessionJSONL(chatSID, s.Cwd), fromTs)
 	}
 	if turns == nil {
 		turns = []jsonl.ConversationTurn{}
@@ -379,7 +370,7 @@ func (d Deps) enrich(s *model.Session, hasNew bool, tasks []model.TaskView) mode
 			}
 		default:
 			if path := jsonl.FindSessionJSONL(*s.AgentSessionID, s.Cwd); path != "" {
-				res := d.JSONL.Enrich(path)
+				res := d.JSONL.EnrichFast(path)
 				v.ClaudeTitle = res.Title
 				if res.Prompts != nil {
 					v.Prompts = res.Prompts
@@ -430,21 +421,18 @@ func sessionIDs(items []*model.Session) []string {
 	return ids
 }
 
-// filterSessions mirrors _filter_sessions (metadata + conversation text search).
 // filterSessions keeps the sessions matching the search query q. q is split
 // into whitespace-separated terms; every term must match (case-insensitive
-// substring) either a session field — project, tmux name, id, cwd, agent
-// session id, model, or the Claude/Cursor title shown on the card — or, for
-// claude/codex sessions, the conversation text. convOnly reports the ids that
-// matched only through the conversation (some term was found nowhere else),
-// so the UI can flag them. Status and owner are deliberately not searched:
-// "run" or the username would match nearly every session.
-func filterSessions(d Deps, items []*model.Session, q string) (out []*model.Session, convOnly map[string]bool) {
+// substring) a session field — project, tmux name, id, cwd, agent session id,
+// model — or the Claude/Cursor title shown on the card. Conversation text is
+// not searched (too many incidental hits), nor are status and owner ("run" or
+// the username would match nearly every session).
+func filterSessions(d Deps, items []*model.Session, q string) []*model.Session {
 	terms := strings.Fields(strings.ToLower(q))
 	if len(terms) == 0 {
-		return items, nil
+		return items
 	}
-	convOnly = map[string]bool{}
+	var out []*model.Session
 	for _, s := range items {
 		model_, agent := "", ""
 		if s.Model != nil {
@@ -455,61 +443,48 @@ func filterSessions(d Deps, items []*model.Session, q string) (out []*model.Sess
 		}
 		meta := strings.ToLower(strings.Join([]string{s.Project, s.Name, s.ID, s.Cwd, agent, model_}, "\n"))
 
-		// Title and conversation text need the (cached) transcript; load it
-		// only when some term is not already in the plain fields.
-		var title string
-		var texts []string
-		loaded := false
-		load := func() {
-			if loaded || agent == "" {
-				return
-			}
-			loaded = true
-			if s.Tool == "cursor" {
-				if res, err := jsonl.EnrichCursorSession(agent, s.Cwd); err == nil && res.Title != nil {
-					title = strings.ToLower(*res.Title)
-				}
-				return
-			}
-			if path := jsonl.FindSessionJSONL(agent, s.Cwd); path != "" {
-				res := d.JSONL.Enrich(path)
-				if res.Title != nil {
-					title = strings.ToLower(*res.Title)
-				}
-				texts = res.SearchText
-			}
-		}
-
-		ok, viaConv := true, false
+		// The title needs the (cached) transcript; load it only when some term
+		// is not already in the plain fields.
+		title, loaded := "", false
+		ok := true
 		for _, t := range terms {
 			if strings.Contains(meta, t) {
 				continue
 			}
-			load()
-			if strings.Contains(title, t) {
-				continue
+			if !loaded {
+				loaded = true
+				title = sessionTitle(d, s.Tool, agent, s.Cwd)
 			}
-			found := false
-			for _, x := range texts {
-				if strings.Contains(strings.ToLower(x), t) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !strings.Contains(title, t) {
 				ok = false
 				break
 			}
-			viaConv = true
 		}
 		if ok {
 			out = append(out, s)
-			if viaConv {
-				convOnly[s.ID] = true
-			}
 		}
 	}
-	return out, convOnly
+	return out
+}
+
+// sessionTitle is the lower-cased title shown on the card (first user prompt),
+// or "" when the transcript is not found.
+func sessionTitle(d Deps, tool, agent, cwd string) string {
+	if agent == "" {
+		return ""
+	}
+	if tool == "cursor" {
+		if res, err := jsonl.EnrichCursorSession(agent, cwd); err == nil && res.Title != nil {
+			return strings.ToLower(*res.Title)
+		}
+		return ""
+	}
+	if path := jsonl.FindSessionJSONL(agent, cwd); path != "" {
+		if res := d.JSONL.EnrichFast(path); res.Title != nil {
+			return strings.ToLower(*res.Title)
+		}
+	}
+	return ""
 }
 
 func queryInt(r *http.Request, key string, def int) int {

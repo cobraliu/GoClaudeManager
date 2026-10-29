@@ -89,9 +89,6 @@ type SessionView struct {
 	HasNewOutput    bool       `json:"has_new_output"`
 	IsStreaming     bool       `json:"is_streaming"`
 	ScheduledTasks  []TaskView `json:"scheduled_tasks"`
-	// ConversationMatch: in a search result, the session matched only via its
-	// conversation text (not its name/path/title).
-	ConversationMatch bool `json:"conversation_match,omitempty"`
 }
 
 // SessionListResponse mirrors pydantic SessionListResponse.
