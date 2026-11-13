@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -137,8 +138,12 @@ func (c *Cache) ListAllClaudeSessionsGlobal(occupied map[string]bool) []GlobalSe
 		return []GlobalSessionGroup{}
 	}
 
-	byCwd := map[string][]GlobalSession{}
-
+	type job struct {
+		projName, path string
+		fi             os.FileInfo
+	}
+	var jobs []job
+	seen := map[string]bool{}
 	for _, pe := range projEntries {
 		if !pe.IsDir() {
 			continue
@@ -153,48 +158,73 @@ func (c *Cache) ListAllClaudeSessionsGlobal(occupied map[string]bool) []GlobalSe
 			if fe.IsDir() || filepath.Ext(fe.Name()) != ".jsonl" {
 				continue
 			}
-			stem := strings.TrimSuffix(fe.Name(), ".jsonl")
-			if occupied[stem] {
+			if occupied[strings.TrimSuffix(fe.Name(), ".jsonl")] {
 				continue
 			}
-			jsonlPath := filepath.Join(projPath, fe.Name())
-
-			// Decoded dir name is authoritative for "where this lives now".
-			// Project name is e.g. "-mnt-hdd2-foo"; drop the leading "-" then
-			// "-"→"/" and prepend "/".
-			decodedDir := "/"
-			if len(projName) > 0 {
-				decodedDir = "/" + strings.ReplaceAll(projName[1:], "-", "/")
-			}
-			internalCwd := readSessionCwd(jsonlPath)
-			var cwd string
-			// Trust internal cwd only when it re-encodes to the same dir name.
-			if internalCwd != "" &&
-				strings.ReplaceAll(strings.ReplaceAll(internalCwd, "/", "-"), "_", "-") == projName {
-				cwd = internalCwd
-			} else {
-				cwd = decodedDir
-			}
-
 			fi, err := fe.Info()
 			if err != nil {
 				continue
 			}
-			data := c.Enrich(jsonlPath)
-			prompts := data.Prompts
-			if prompts == nil {
-				prompts = []string{}
-			}
-			byCwd[cwd] = append(byCwd[cwd], GlobalSession{
-				AgentSessionID: stem,
-				Mtime:          mtimeSecs(fi),
-				Title:          data.Title,
-				Prompts:        prompts,
-				Cwd:            cwd,
-			})
+			p := filepath.Join(projPath, fe.Name())
+			seen[p] = true
+			jobs = append(jobs, job{projName, p, fi})
 		}
 	}
 
+	// Summaries are cached by (size, mtime); only new/changed files are read,
+	// a few at a time.
+	type out struct {
+		cwd string
+		s   GlobalSession
+	}
+	results := make([]out, len(jobs))
+	var wg sync.WaitGroup
+	next := make(chan int)
+	for w := 0; w < 6; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				j := jobs[i]
+				// Decoded dir name is authoritative for "where this lives now".
+				// Project name is e.g. "-mnt-hdd2-foo"; drop the leading "-" then
+				// "-"→"/" and prepend "/".
+				decodedDir := "/"
+				if len(j.projName) > 0 {
+					decodedDir = "/" + strings.ReplaceAll(j.projName[1:], "-", "/")
+				}
+				data, internalCwd := browseEnrich(j.path, j.fi)
+				cwd := decodedDir
+				// Trust internal cwd only when it re-encodes to the same dir name.
+				if internalCwd != "" &&
+					strings.ReplaceAll(strings.ReplaceAll(internalCwd, "/", "-"), "_", "-") == j.projName {
+					cwd = internalCwd
+				}
+				prompts := data.Prompts
+				if prompts == nil {
+					prompts = []string{}
+				}
+				results[i] = out{cwd, GlobalSession{
+					AgentSessionID: strings.TrimSuffix(filepath.Base(j.path), ".jsonl"),
+					Mtime:          mtimeSecs(j.fi),
+					Title:          data.Title,
+					Prompts:        prompts,
+					Cwd:            cwd,
+				}}
+			}
+		}()
+	}
+	for i := range jobs {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	pruneBrowse(seen)
+
+	byCwd := map[string][]GlobalSession{}
+	for _, r := range results {
+		byCwd[r.cwd] = append(byCwd[r.cwd], r.s)
+	}
 	return groupAndSort(byCwd)
 }
 
@@ -268,14 +298,16 @@ func ListAllCursorSessionsGlobal(occupied map[string]bool) []GlobalSessionGroup 
 // LocalSession is one entry from list_local_sessions / list_project_session_ids
 // (the session-switcher dropdown shape): {agent_session_id, mtime, title}.
 type LocalSession struct {
-	AgentSessionID string  `json:"agent_session_id"`
-	Mtime          float64 `json:"mtime"`
-	Title          *string `json:"title"`
+	AgentSessionID string   `json:"agent_session_id"`
+	Mtime          float64  `json:"mtime"`
+	Title          *string  `json:"title"`
+	Size           int64    `json:"size,omitempty"`
+	Prompts        []string `json:"prompts,omitempty"`
 }
 
 // ListProjectSessionIDs returns all JSONL session stems in the Claude project
-// dir for cwd, newest first. Port of list_project_session_ids. Enrichment runs
-// through the incremental Cache (see ListAllClaudeSessionsGlobal).
+// dir for cwd, newest first. Port of list_project_session_ids. Titles come from
+// the light browse index (see browse.go), not the full parse Cache.
 func (c *Cache) ListProjectSessionIDs(cwd string) []LocalSession {
 	base := projectsDir()
 	if base == "" {
@@ -304,11 +336,13 @@ func (c *Cache) ListProjectSessionIDs(cwd string) []LocalSession {
 			if err != nil {
 				continue
 			}
-			data := c.Enrich(filepath.Join(projPath, fe.Name()))
+			data, _ := browseEnrich(filepath.Join(projPath, fe.Name()), fi)
 			results = append(results, LocalSession{
 				AgentSessionID: stem,
 				Mtime:          mtimeSecs(fi),
 				Title:          data.Title,
+				Size:           fi.Size(),
+				Prompts:        data.Prompts,
 			})
 		}
 		sort.SliceStable(results, func(i, j int) bool {
@@ -559,6 +593,34 @@ func (c *Cache) ListSubagentSummaries(claudeSessionID, cwd string) []SubagentSum
 // Attribution mirrors resolveChatSID's recovery rule: a transcript not claimed by
 // another session belongs to (or is recoverable by) this one. Deduped by agentId,
 // sorted newest-first. Returns a non-nil (possibly empty) slice.
+// SubagentsReady is Cache.ReadyAll for every transcript
+// ListAllSubagentSummariesForCwd would read (parents and sub-agents): false,
+// with the parses started in the background, while that still means a long
+// cold parse.
+func (c *Cache) SubagentsReady(cwd string, exclude map[string]bool) bool {
+	projPath := claudeProjectDir(cwd)
+	if projPath == "" {
+		return true
+	}
+	entries, err := os.ReadDir(projPath)
+	if err != nil {
+		return true
+	}
+	var paths []string
+	for _, e := range entries {
+		dir := filepath.Join(projPath, e.Name(), "subagents")
+		if !e.IsDir() || exclude[e.Name()] || !isDir(dir) {
+			continue
+		}
+		if pp := filepath.Join(projPath, e.Name()+".jsonl"); isFile(pp) {
+			paths = append(paths, pp)
+		}
+		agents, _ := filepath.Glob(filepath.Join(dir, "agent-*.jsonl"))
+		paths = append(paths, agents...)
+	}
+	return c.ReadyAll(paths)
+}
+
 func (c *Cache) ListAllSubagentSummariesForCwd(cwd string, exclude map[string]bool) []SubagentSummary {
 	projPath := claudeProjectDir(cwd)
 	if projPath == "" {

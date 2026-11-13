@@ -396,6 +396,10 @@ func getSubagents(d Deps, w http.ResponseWriter, r *http.Request) {
 	// compacted ones), excluding sibling-session ids, so sub-agents from a
 	// session's full history are surfaced — not just its live transcript.
 	exclude, _ := d.Store.GetAllAgentSessionIDs(s.ID)
+	if !d.JSONL.SubagentsReady(s.Cwd, exclude) {
+		writeWarming(w)
+		return
+	}
 	writeJSON(w, http.StatusOK, d.JSONL.ListAllSubagentSummariesForCwd(s.Cwd, exclude))
 }
 

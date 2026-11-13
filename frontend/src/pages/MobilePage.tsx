@@ -276,7 +276,7 @@ function MobileUsageRow() {
       borderBottom: "1px solid var(--border-subtle)",
       flexShrink: 0,
     }}>
-      <UsageBar />
+      <UsageBar placement="down" />
     </div>
   );
 }

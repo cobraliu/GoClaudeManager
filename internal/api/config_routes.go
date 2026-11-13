@@ -89,6 +89,7 @@ func registerTopLevelRoutes(r chi.Router, d Deps) {
 
 	// ── /api/usage (app/api/usage_api.py) ────────────────────────────────
 	r.With(d.Auth.RequireUser).Get("/usage", func(w http.ResponseWriter, r *http.Request) { getUsage(d, w, r) })
+	r.With(d.Auth.RequireUser).Get("/usage/history", func(w http.ResponseWriter, r *http.Request) { getUsageHistory(d, w, r) })
 
 	// ── /api/fs (app/api/fs.py) ──────────────────────────────────────────
 	r.Group(func(rr chi.Router) {
@@ -663,32 +664,11 @@ var usageWindows = []struct{ key, abbrev string }{
 }
 
 func getUsage(d Deps, w http.ResponseWriter, _ *http.Request) {
-	usageCacheMu.Lock()
-	if usageCache != nil && time.Since(usageCacheTS) < usageCacheTTL {
-		cached := usageCache
-		usageCacheMu.Unlock()
-		writeJSON(w, http.StatusOK, cached)
-		return
-	}
-	usageCacheMu.Unlock()
-
-	data, err := fetchRateLimits(d.Cfg.Proxy())
+	data, err := refreshUsage(d)
 	if err != nil {
-		usageCacheMu.Lock()
-		stale := usageCache
-		usageCacheMu.Unlock()
-		if stale != nil {
-			writeJSON(w, http.StatusOK, stale) // return stale cache on error
-			return
-		}
 		writeErr(w, http.StatusBadGateway, "Failed to fetch usage: "+err.Error())
 		return
 	}
-
-	usageCacheMu.Lock()
-	usageCache = data
-	usageCacheTS = time.Now()
-	usageCacheMu.Unlock()
 	writeJSON(w, http.StatusOK, data)
 }
 

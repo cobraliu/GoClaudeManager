@@ -38,6 +38,14 @@ const LIVE_TAIL = 100;
 // Bounded older-history page size (raw entries) loaded on scroll-to-top / "Load
 // more" and prepended to the head.
 const HISTORY_PAGE = 200;
+// The merged window only grows while the session runs (each delta appends), and
+// nothing is virtualized — a tab left open on a busy session ended up rendering
+// thousands of entries, so every poll re-rendered all of them and switching
+// sessions stalled tearing the DOM down. While following the bottom, trim the
+// head back to LIVE_TRIM_TO once it passes LIVE_MAX_WINDOW (scrolling up pages
+// it back in).
+const LIVE_MAX_WINDOW = 300;
+const LIVE_TRIM_TO = 200;
 // Min gap between auto history loads, so a render-induced scroll change can't
 // re-fire "load more" in a tight loop.
 const LOAD_COOLDOWN_MS = 500;
@@ -4886,9 +4894,24 @@ export function ConversationPane({ sessionId, projectName, sessionName, tool, co
             oldestOffsetRef.current = off;
             setOldestOffset(off);
           } else {
-            messagesRef.current = merged;
+            let next = merged;
+            const real = merged.filter((m) => !isSyntheticEntry(m)).length;
+            if (stickToBottom.current && real > LIVE_MAX_WINDOW) {
+              // Drop the oldest real entries, keeping LIVE_TRIM_TO of them.
+              let drop = real - LIVE_TRIM_TO;
+              next = merged.filter((m) => isSyntheticEntry(m) || drop-- <= 0);
+              // Raw offsets count at least as many entries as survive
+              // normalizeRaw, so total - kept never skips history: load-more
+              // may re-fetch a few kept entries, which it dedupes by uuid.
+              const off = Math.max(0, msgTotal - LIVE_TRIM_TO);
+              if (off > oldestOffsetRef.current) {
+                oldestOffsetRef.current = off;
+                setOldestOffset(off);
+              }
+            }
+            messagesRef.current = next;
             prevMsgSigRef.current = sig;
-            setMessages(merged);
+            setMessages(next);
           }
         }
         setTotal(msgTotal);

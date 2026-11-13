@@ -17,9 +17,27 @@ import (
 // the machine. A TTL reclaims idle entries; a hard cap bounds the worst case.
 const (
 	cacheMaxEntries = 512
-	cacheEntryTTL   = 15 * time.Minute
+	cacheEntryTTL   = 24 * time.Hour
 	cacheSweepEvery = 60 * time.Second
 )
+
+// Cold-start tail parse. A never-parsed transcript over coldTailThreshold is
+// first parsed from its last coldTailBytes only (plus the first user message
+// in the head, for the title): everything the hot paths read — plan pending,
+// AUQ state, active todos/goal, last prompt — lives near the end. A full
+// parse of a 200MB transcript takes ~8s and used to hold the entry's lock the
+// whole time, so status / status-bar requests queued behind it and filled the
+// browser's 6 connections. The full parse then runs in the background on a
+// private entry (no lock held) and is swapped in when done, completing the
+// history views.
+const (
+	coldTailThreshold = 16 << 20
+	coldTailBytes     = 8 << 20
+	coldHeadBytes     = 2 << 20
+)
+
+// fullSem bounds concurrent background full parses.
+var fullSem = make(chan struct{}, 2)
 
 // Cache is an in-memory incremental parser keyed by absolute file path and
 // invalidated by (size, mtime).
@@ -83,6 +101,16 @@ type cacheEntry struct {
 	// background parse in progress.
 	snap    atomic.Pointer[EnrichResult]
 	warming atomic.Bool
+
+	// partial: state was built from the file's tail only (see coldTailBytes);
+	// filling marks the background full parse in flight; fullOnly disables the
+	// tail shortcut (set on that background parse's private entry).
+	partial  bool
+	filling  atomic.Bool
+	fullOnly bool
+
+	// ready: the entry has completed at least one sync (see Ready).
+	ready atomic.Bool
 }
 
 func newCacheEntry() *cacheEntry {
@@ -103,6 +131,7 @@ func (e *cacheEntry) reset() {
 	e.subagent = newSubagentState()
 	e.toolResults = map[string]bool{}
 	e.userMsgs, e.userTimestamps = nil, nil
+	e.partial = false
 }
 
 // acquire returns the cache entry for jsonlPath synced to the current file
@@ -128,7 +157,106 @@ func (c *Cache) acquire(jsonlPath string) *cacheEntry {
 		e.mu.Unlock()
 		return nil
 	}
+	e.ready.Store(true)
+	if e.partial {
+		c.fill(jsonlPath, e)
+	}
 	return e
+}
+
+// Ready reports whether queries on jsonlPath can be answered without a cold
+// parse. When they cannot (a large transcript not parsed since startup or
+// eviction) it starts the parse in the background and returns false, so an
+// HTTP handler can answer "warming, retry shortly" instead of holding the
+// connection for seconds. A missing or small file is always ready (an inline
+// parse of a small file is quick).
+func (c *Cache) Ready(jsonlPath string) bool {
+	return c.ReadyAll([]string{jsonlPath})
+}
+
+// ReadyAll is Ready for a set of transcripts read by one request: not ready
+// when their not-yet-parsed bytes add up past enrichSyncLimit (many small
+// sub-agent transcripts cost as much as one big one); then every cold one
+// starts warming in the background.
+func (c *Cache) ReadyAll(paths []string) bool {
+	type cold struct {
+		path string
+		e    *cacheEntry
+	}
+	var colds []cold
+	var coldBytes int64
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		e := c.entry(p)
+		if e.ready.Load() {
+			continue
+		}
+		if fi, err := os.Stat(p); err == nil {
+			colds = append(colds, cold{p, e})
+			coldBytes += fi.Size()
+		}
+	}
+	if coldBytes <= enrichSyncLimit {
+		return true
+	}
+	for _, x := range colds {
+		c.warm(x.path, x.e)
+	}
+	return false
+}
+
+// entry returns (creating if needed) the cache entry for path and marks it
+// accessed, without locking or parsing it.
+func (c *Cache) entry(path string) *cacheEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.entries[path]
+	if e == nil {
+		e = newCacheEntry()
+		c.entries[path] = e
+	}
+	now := time.Now().UnixNano()
+	e.lastAccess = now
+	c.maybeEvictLocked(now)
+	return e
+}
+
+// fill parses jsonlPath in full in the background and swaps the result into
+// the partial entry e. The parse runs on a private entry, so e stays readable
+// (with its tail-only state) the whole time; e.mu is held only for the final
+// catch-up and swap.
+func (c *Cache) fill(jsonlPath string, e *cacheEntry) {
+	if !e.filling.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer e.filling.Store(false)
+		fullSem <- struct{}{}
+		defer func() { <-fullSem }()
+		f := newCacheEntry()
+		f.fullOnly = true
+		if !f.sync(jsonlPath) {
+			return
+		}
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if !e.partial || !f.sync(jsonlPath) { // catch up on bytes appended meanwhile
+			return
+		}
+		e.adopt(f)
+	}()
+}
+
+// adopt replaces e's parsed state with f's. Caller holds e.mu and owns f.
+func (e *cacheEntry) adopt(f *cacheEntry) {
+	e.size, e.mtime, e.offset = f.size, f.mtime, f.offset
+	e.goals, e.todos, e.conv = f.goals, f.todos, f.conv
+	e.planOutstanding, e.auqs = f.planOutstanding, f.auqs
+	e.subagent, e.toolResults = f.subagent, f.toolResults
+	e.userMsgs, e.userTimestamps = f.userMsgs, f.userTimestamps
+	e.partial = false
 }
 
 // sync brings e up to date with the file at jsonlPath, parsing only appended
@@ -176,6 +304,22 @@ func (e *cacheEntry) sync(jsonlPath string) bool {
 
 	consumed := start
 	r := bufio.NewReaderSize(f, 1<<20)
+	if start == 0 && size > coldTailThreshold && !e.fullOnly {
+		// Cold and large: parse the tail only (see coldTailBytes). The head
+		// supplies just the first user message (the session title).
+		head := firstUserMsg(f)
+		tail := size - coldTailBytes
+		if _, err := f.Seek(tail, io.SeekStart); err != nil {
+			return true
+		}
+		r.Reset(f)
+		skipped, _ := r.ReadBytes('\n') // drop the partial first line
+		consumed = tail + int64(len(skipped))
+		if head != "" {
+			e.userMsgs = append(e.userMsgs, head)
+		}
+		e.partial = true
+	}
 	for {
 		line, err := r.ReadBytes('\n')
 		if err == io.EOF {
@@ -189,10 +333,7 @@ func (e *cacheEntry) sync(jsonlPath string) bool {
 		}
 		consumed += int64(len(line))
 		// Trim the trailing newline (and any CR) before decoding.
-		trimmed := line
-		for len(trimmed) > 0 && (trimmed[len(trimmed)-1] == '\n' || trimmed[len(trimmed)-1] == '\r') {
-			trimmed = trimmed[:len(trimmed)-1]
-		}
+		trimmed := trimEOL(line)
 		if len(trimmed) == 0 {
 			continue
 		}
@@ -203,6 +344,36 @@ func (e *cacheEntry) sync(jsonlPath string) bool {
 	e.size = size
 	e.mtime = mtime
 	return true
+}
+
+// firstUserMsg returns the first user message within the head of f (up to
+// coldHeadBytes), using the same extraction as feedLine.
+func firstUserMsg(f *os.File) string {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return ""
+	}
+	h := newCacheEntry()
+	r := bufio.NewReaderSize(io.LimitReader(f, coldHeadBytes), 1<<20)
+	for len(h.userMsgs) == 0 {
+		line, err := r.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+		if t := trimEOL(line); len(t) > 0 {
+			h.feedLine(t)
+		}
+	}
+	if len(h.userMsgs) == 0 {
+		return ""
+	}
+	return h.userMsgs[0]
+}
+
+func trimEOL(line []byte) []byte {
+	for len(line) > 0 && (line[len(line)-1] == '\n' || line[len(line)-1] == '\r') {
+		line = line[:len(line)-1]
+	}
+	return line
 }
 
 // maybeEvictLocked reclaims cache entries. It is a no-op unless the map is over

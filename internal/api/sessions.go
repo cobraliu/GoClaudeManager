@@ -36,6 +36,7 @@ func sessionsRouter(d Deps) http.Handler {
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) { listSessions(d, w, r) })
 		r.With(d.Auth.RequireAdmin).Get("/all", func(w http.ResponseWriter, r *http.Request) { listAllSessions(d, w, r) })
 		r.With(d.Auth.RequireAdmin).Patch("/{id}/identity", func(w http.ResponseWriter, r *http.Request) { adminUpdateIdentity(d, w, r) })
+		r.With(d.Auth.RequireAdmin).Get("/{id}/identity/candidates", func(w http.ResponseWriter, r *http.Request) { adminIdentityCandidates(d, w, r) })
 		r.Get("/status", func(w http.ResponseWriter, r *http.Request) { listSessionsStatus(d, w, r) })
 
 		r.Get("/{id}", func(w http.ResponseWriter, r *http.Request) { getSession(d, w, r) })
@@ -93,6 +94,37 @@ func resolveOwned(d Deps, w http.ResponseWriter, r *http.Request) *model.Session
 // chat-history resolution (resolveChatSID), so this is a manual override for
 // when the stored id has gone stale. No uniqueness is enforced (mirrors the
 // rest of the codebase), but every change is logged by the store.
+// adminIdentityCandidates lists every transcript in the session's project dir
+// (re-read on each call) so the admin IDs editor can offer a picker. used_by
+// names other managed sessions already pointing at a transcript.
+func adminIdentityCandidates(d Deps, w http.ResponseWriter, r *http.Request) {
+	s, err := d.Store.GetSession(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if s == nil {
+		writeErr(w, http.StatusNotFound, "session not found")
+		return
+	}
+	var list []jsonl.LocalSession
+	if s.Tool == "cursor" {
+		list = jsonl.ListCursorLocalSessions(s.Cwd)
+	} else {
+		list = d.JSONL.ListProjectSessionIDs(s.Cwd)
+	}
+	owners, _ := d.Store.AgentSessionOwners(s.ID)
+	type cand struct {
+		jsonl.LocalSession
+		UsedBy []string `json:"used_by"`
+	}
+	out := make([]cand, 0, len(list))
+	for _, ls := range list {
+		out = append(out, cand{ls, owners[ls.AgentSessionID]})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cwd": s.Cwd, "items": out})
+}
+
 func adminUpdateIdentity(d Deps, w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	s, err := d.Store.GetSession(id)
@@ -196,9 +228,13 @@ func listSessionsStatus(d Deps, w http.ResponseWriter, r *http.Request) {
 	views := make([]model.SessionStatusView, 0, len(items))
 	for _, s := range items {
 		comp, ok := d.Snapshot.Get(s.ID)
-		if !ok {
+		if !ok && s.Status != model.StatusRunning && s.Status != model.StatusDetached {
 			comp = d.Snapshot.Compute(s)
 		}
+		// An active session missing from the snapshot (server just started, or
+		// it just became active) is left blank rather than computed inline:
+		// Compute may cold-parse a 200MB transcript, and the status loop fills
+		// it in within a refresh or two anyway.
 		views = append(views, model.SessionStatusView{
 			ID:                 s.ID,
 			Status:             s.Status,
@@ -260,7 +296,12 @@ func listGoals(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": nil, "history": []any{}})
 		return
 	}
-	writeJSON(w, http.StatusOK, d.JSONL.Goals(jsonl.FindSessionJSONL(chatSID, s.Cwd)))
+	path := jsonl.FindSessionJSONL(chatSID, s.Cwd)
+	if !d.JSONL.Ready(path) {
+		writeWarming(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, d.JSONL.Goals(path))
 }
 
 func listTodos(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -273,7 +314,12 @@ func listTodos(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": []any{}, "history": []any{}})
 		return
 	}
-	writeJSON(w, http.StatusOK, d.JSONL.TodoPlans(jsonl.FindSessionJSONL(chatSID, s.Cwd)))
+	path := jsonl.FindSessionJSONL(chatSID, s.Cwd)
+	if !d.JSONL.Ready(path) {
+		writeWarming(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, d.JSONL.TodoPlans(path))
 }
 
 func statusBar(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -287,6 +333,10 @@ func statusBar(d Deps, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := jsonl.FindSessionJSONL(chatSID, s.Cwd)
+	if !d.JSONL.Ready(path) {
+		writeWarming(w)
+		return
+	}
 	plans := d.JSONL.TodoPlans(path)
 	goals := d.JSONL.Goals(path)
 	writeJSON(w, http.StatusOK, map[string]any{"todos_active": plans.Active, "goal_active": goals.Active})
@@ -302,7 +352,12 @@ func listAUQs(d Deps, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	writeJSON(w, http.StatusOK, d.JSONL.AUQs(jsonl.FindSessionJSONL(chatSID, s.Cwd)))
+	path := jsonl.FindSessionJSONL(chatSID, s.Cwd)
+	if !d.JSONL.Ready(path) {
+		writeWarming(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, d.JSONL.AUQs(path))
 }
 
 func listTasks(d Deps, w http.ResponseWriter, r *http.Request) {
@@ -329,7 +384,12 @@ func getConversation(d Deps, w http.ResponseWriter, r *http.Request) {
 	if s.Tool == "cursor" {
 		turns, _ = jsonl.GetCursorConversation(chatSID, s.Cwd, fromTs)
 	} else {
-		turns = d.JSONL.Conversation(jsonl.FindSessionJSONL(chatSID, s.Cwd), fromTs)
+		path := jsonl.FindSessionJSONL(chatSID, s.Cwd)
+		if !d.JSONL.Ready(path) {
+			writeWarming(w)
+			return
+		}
+		turns = d.JSONL.Conversation(path, fromTs)
 	}
 	if turns == nil {
 		turns = []jsonl.ConversationTurn{}

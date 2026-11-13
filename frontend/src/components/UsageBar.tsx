@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getUsageInfo, type UsageInfo, type UsageWindow } from "../api/sessionApi";
+import { UsageChart } from "./UsageChart";
 
 function formatReset(isoTs: string): string {
   const d = new Date(isoTs);
@@ -93,6 +94,7 @@ export function UsageCenter() {
     <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 24 }}>
       {info.five_hour && <CenterRow label="Current session" w={info.five_hour} />}
       {info.seven_day && <CenterRow label="Current week (all models)" w={info.seven_day} />}
+      <div style={{ width: "min(560px, calc(100% - 32px))" }}><UsageChart /></div>
       {updatedAt && (
         <span style={{ color: "var(--text-faintest)", fontSize: 10 }}>
           updated {updatedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}
@@ -102,18 +104,47 @@ export function UsageCenter() {
   );
 }
 
-export function UsageBar() {
+export function UsageBar({ placement = "up" }: { placement?: "up" | "down" }) {
   const { info } = useUsageInfo();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
 
   if (!info || (!info.five_hour && !info.seven_day)) return null;
 
   return (
-    <span style={{ display: "flex", alignItems: "center", gap: 8, marginRight: "auto" }}>
-      {info.five_hour && <Item label="Session" w={info.five_hour} />}
-      {info.five_hour && info.seven_day && (
-        <span style={{ color: "var(--bg-hover)", fontSize: 10 }}>·</span>
+    <span ref={wrapRef} style={{ position: "relative", display: "flex", alignItems: "center", marginRight: "auto" }}>
+      <span
+        onClick={() => setOpen(o => !o)}
+        title="Usage history"
+        style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+      >
+        {info.five_hour && <Item label="Session" w={info.five_hour} />}
+        {info.five_hour && info.seven_day && (
+          <span style={{ color: "var(--bg-hover)", fontSize: 10 }}>·</span>
+        )}
+        {info.seven_day && <Item label="Week" w={info.seven_day} />}
+      </span>
+      {open && (
+        <div style={{
+          position: "absolute", left: 0, zIndex: 1000,
+          ...(placement === "up" ? { bottom: "calc(100% + 6px)" } : { top: "calc(100% + 6px)" }),
+          background: "var(--bg-modal)", border: "1px solid var(--border)", borderRadius: 6,
+          padding: 10, boxShadow: "0 6px 24px rgba(0,0,0,0.35)",
+        }}>
+          <UsageChart width={Math.min(520, window.innerWidth - 32)} />
+        </div>
       )}
-      {info.seven_day && <Item label="Week" w={info.seven_day} />}
     </span>
   );
 }

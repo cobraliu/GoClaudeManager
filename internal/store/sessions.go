@@ -651,3 +651,30 @@ func placeholders(items []string) (string, []any) {
 	}
 	return string(ph), args
 }
+
+// AgentSessionOwners maps agent_session_id → names of the managed sessions that
+// reference it (as agent_session_id or resume_session_id), excluding excludeID.
+func (s *Store) AgentSessionOwners(excludeID string) (map[string][]string, error) {
+	rows, err := s.DB.Query(
+		`SELECT name, agent_session_id, resume_session_id FROM sessions WHERE id != ? AND (agent_session_id IS NOT NULL OR resume_session_id IS NOT NULL)`,
+		excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var name string
+		var agent, resume *string
+		if err := rows.Scan(&name, &agent, &resume); err != nil {
+			return nil, err
+		}
+		if agent != nil && *agent != "" {
+			out[*agent] = append(out[*agent], name)
+		}
+		if resume != nil && *resume != "" && (agent == nil || *resume != *agent) {
+			out[*resume] = append(out[*resume], name)
+		}
+	}
+	return out, rows.Err()
+}

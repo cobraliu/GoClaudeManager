@@ -105,6 +105,14 @@ CREATE TABLE IF NOT EXISTS users (
     is_admin       INTEGER NOT NULL DEFAULT 0,
     google_email   TEXT
 );
+CREATE TABLE IF NOT EXISTS usage_samples (
+    ts           INTEGER NOT NULL,
+    five_hour    REAL,
+    five_reset   INTEGER,
+    seven_day    REAL,
+    seven_reset  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_usage_samples_ts ON usage_samples(ts);
 `
 
 // migrations are the additive ALTERs from session_store.__init__. Each is run

@@ -81,6 +81,15 @@ export function TuiPane({ wsUrl, theme, fontFamily, scrollToBottomRef, sendRawRe
   const termRef      = useRef<Terminal | null>(null);
   const fitRef       = useRef<FitAddon | null>(null);
   const wsRef        = useRef<WsClient | null>(null);
+  // The pane stays mounted (display:none) while the chat view is shown, and the
+  // TUI repaints constantly. Feeding that into a hidden xterm — or one in a
+  // background tab, where Chrome throttles xterm's write-buffer timers to about
+  // once a minute — queued up to tens of MB of unparsed output, which then
+  // hogged the main thread when the page came back and stalled session
+  // switches. While hidden, output is dropped; on becoming visible again tmux is
+  // asked for a full redraw.
+  const shownRef     = useRef(true);
+  const staleRef     = useRef(false);
   const [copyToast, setCopyToast] = useState(false);
   const [showPageBtns] = useState<boolean>(
     typeof window !== "undefined" &&
@@ -179,7 +188,20 @@ export function TuiPane({ wsUrl, theme, fontFamily, scrollToBottomRef, sendRawRe
 
     // Auto-fit whenever the container changes size. In wide mode we keep cols
     // fixed at WIDE_COLS and only recompute rows based on container height.
+    const updateShown = () => {
+      const shown = el.clientWidth > 0 && el.clientHeight > 0 && !document.hidden;
+      const wasShown = shownRef.current;
+      shownRef.current = shown;
+      if (shown && !wasShown && staleRef.current) {
+        staleRef.current = false;
+        wsRef.current?.sendRefresh();
+      }
+      return shown;
+    };
+    document.addEventListener("visibilitychange", updateShown);
+
     const ro = new ResizeObserver(() => {
+      if (!updateShown()) return; // display:none → 0×0; nothing to fit
       try {
         const wm = window.localStorage.getItem("tuiWideMode") === "1";
         if (wm) {
@@ -438,6 +460,7 @@ export function TuiPane({ wsUrl, theme, fontFamily, scrollToBottomRef, sendRawRe
 
     return () => {
       ro.disconnect();
+      document.removeEventListener("visibilitychange", updateShown);
       term.dispose();
       termRef.current = null;
       fitRef.current  = null;
@@ -466,7 +489,10 @@ export function TuiPane({ wsUrl, theme, fontFamily, scrollToBottomRef, sendRawRe
         try { fitRef.current?.fit(); } catch { /* ok */ }
         ws.sendResize(term.cols, term.rows);
       },
-      onOutput: (data) => term.write(data),
+      onOutput: (data) => {
+        if (shownRef.current) term.write(data);
+        else staleRef.current = true;
+      },
       onState: (state) => {
         if (state.status === "terminated") {
           term.write("\r\n\x1b[31m[Session terminated]\x1b[0m\r\n");

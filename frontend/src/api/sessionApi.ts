@@ -75,19 +75,101 @@ function getToken(): string {
 const inflightGets = new Map<string, Promise<{ status: number; text: string }>>();
 
 // A GET that has not answered in this long is abandoned so its connection
-// slot is released (no polled endpoint legitimately takes this long).
-const GET_TIMEOUT_MS = 60_000;
+// slot is released, then retried once (GETs are idempotent). The browser only
+// opens ~6 connections per host; one stuck poll used to hold its slot for a
+// full minute, and a few of them queued every other request — including the
+// clicks — behind them. No API GET legitimately takes this long (the slowest
+// seen is ~4s). A wait that was in the browser (connection queue, cache lock)
+// usually clears on a fresh attempt.
+const GET_TIMEOUT_MS = 15_000;
+const GET_RETRY_DELAY_MS = 500;
 
-function fetchText(url: string, init: RequestInit): Promise<{ status: number; text: string }> {
+// Connection budget. The browser opens at most ~6 HTTP/1.1 connections per
+// host; when slow polls held them all, a click (switching session) queued
+// behind them and the UI looked frozen. A GET of a path already requested in
+// the last POLL_WINDOW_MS is treated as a background poll, and at most
+// POLL_MAX_INFLIGHT of those run at once (the rest wait here, in JS, holding
+// no connection) — so a first-time request, i.e. one the user just caused,
+// always finds a free connection.
+const POLL_WINDOW_MS = 30_000;
+const POLL_MAX_INFLIGHT = 3;
+const lastRequested = new Map<string, number>();
+const pollQueue: Array<() => void> = [];
+let pollInflight = 0;
+
+async function withConnectionBudget<T>(url: string, run: () => Promise<T>): Promise<T> {
+  const key = url.split("?")[0];
+  const now = Date.now();
+  const prev = lastRequested.get(key);
+  lastRequested.set(key, now);
+  if (lastRequested.size > 500) {
+    for (const [k, t] of lastRequested) if (now - t > POLL_WINDOW_MS) lastRequested.delete(k);
+  }
+  if (prev === undefined || now - prev > POLL_WINDOW_MS) return run();
+  if (pollInflight >= POLL_MAX_INFLIGHT) await new Promise<void>((r) => pollQueue.push(r));
+  pollInflight++;
+  try {
+    return await run();
+  } finally {
+    pollInflight--;
+    pollQueue.shift()?.();
+  }
+}
+
+function fetchTextOnce(url: string, init: RequestInit): Promise<{ status: number; text: string; retryAfter?: number }> {
+  return withConnectionBudget(url, () => fetchTextNow(url, init));
+}
+
+function fetchTextNow(url: string, init: RequestInit): Promise<{ status: number; text: string; retryAfter?: number }> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), GET_TIMEOUT_MS);
-  return fetch(url, { ...init, signal: ctl.signal })
-    .then(async (resp) => ({ status: resp.status, text: resp.status === 204 ? "" : await resp.text() }))
+  const signal = init.signal ? AbortSignal.any([init.signal, ctl.signal]) : ctl.signal;
+  return fetch(url, { cache: "no-store", ...init, signal })
+    .then(async (resp) => {
+      const ra = resp.status === 202 ? Number(resp.headers.get("Retry-After")) : NaN;
+      return {
+        status: resp.status,
+        text: resp.status === 204 ? "" : await resp.text(),
+        retryAfter: ra > 0 ? ra : undefined,
+      };
+    })
     .catch((e) => {
-      if (ctl.signal.aborted) throw new Error(`request timed out after ${GET_TIMEOUT_MS / 1000}s`);
+      if (ctl.signal.aborted && !init.signal?.aborted) {
+        throw new GetTimeoutError(`request timed out after ${GET_TIMEOUT_MS / 1000}s`);
+      }
       throw e;
     })
     .finally(() => clearTimeout(timer));
+}
+
+class GetTimeoutError extends Error {}
+
+// 202 + Retry-After means the server is still building the transcript cache
+// this answer needs (it returns at once rather than holding the connection
+// while it parses); wait as told and ask again.
+const WARMING_MAX_RETRIES = 15;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchTextRetrying(url: string, init: RequestInit): Promise<{ status: number; text: string; retryAfter?: number }> {
+  try {
+    return await fetchTextOnce(url, init);
+  } catch (e) {
+    if (!(e instanceof GetTimeoutError)) throw e;
+    await sleep(GET_RETRY_DELAY_MS);
+    if (init.signal?.aborted) throw e;
+    return fetchTextOnce(url, init);
+  }
+}
+
+async function fetchText(url: string, init: RequestInit): Promise<{ status: number; text: string }> {
+  for (let i = 0; ; i++) {
+    const res = await fetchTextRetrying(url, init);
+    if (res.status !== 202 || res.retryAfter == null) return res;
+    if (i >= WARMING_MAX_RETRIES) return { status: 503, text: "server is still loading this session's history" };
+    await sleep(res.retryAfter * 1000);
+    if (init.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  }
 }
 
 async function request<T>(
@@ -120,6 +202,9 @@ async function request<T>(
       p.then(done, done);
     }
     res = await p;
+  } else if (method === "GET" && !init?.body) {
+    // Caller-cancellable GET: not coalesced, but still bounded + retried.
+    res = await fetchText(url, { ...init, headers });
   } else {
     const resp = await fetch(url, { ...init, headers });
     res = { status: resp.status, text: resp.status === 204 ? "" : await resp.text() };
@@ -686,6 +771,20 @@ export function updateSessionIdentity(
     method: "PATCH",
     body: JSON.stringify(body),
   });
+}
+
+export interface IdentityCandidate {
+  agent_session_id: string;
+  mtime: number;          // unix seconds
+  title: string | null;
+  size?: number;
+  prompts?: string[];
+  used_by?: string[] | null; // other managed sessions referencing this transcript
+}
+
+// Admin-only: every transcript in the session's project dir (re-read per call).
+export function listIdentityCandidates(sessionId: string): Promise<{ cwd: string; items: IdentityCandidate[] }> {
+  return request(`/api/sessions/${sessionId}/identity/candidates`);
 }
 
 export interface SearchResult {
@@ -1996,6 +2095,18 @@ export interface UsageInfo {
 
 export function getUsageInfo(): Promise<UsageInfo> {
   return request<UsageInfo>("/api/usage");
+}
+
+export interface UsageSample {
+  ts: number;                 // unix seconds
+  five_hour: number | null;   // 0..1
+  five_reset: number | null;  // unix seconds
+  seven_day: number | null;
+  seven_reset: number | null;
+}
+
+export function getUsageHistory(): Promise<{ samples: UsageSample[]; interval: number }> {
+  return request<{ samples: UsageSample[]; interval: number }>("/api/usage/history");
 }
 
 export function getPaneHistory(sessionId: string, lines = 20000): Promise<{ content: string }> {

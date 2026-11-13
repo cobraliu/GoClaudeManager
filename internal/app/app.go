@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -143,7 +145,9 @@ func (a *App) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
+	stallDumpDir = filepath.Join(dataDirOrDefault(a.Env.DataDir), "debug")
 	r.Use(requestLogger)
+	r.Use(noStoreAPI)
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -183,6 +187,11 @@ func (a *App) Server() *http.Server {
 		Addr:              addr,
 		Handler:           a.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
+		ConnState: func(c net.Conn, st http.ConnState) {
+			if st == http.StateNew || st == http.StateClosed || st == http.StateHijacked {
+				accessLog("CONN %s %s", c.RemoteAddr(), st)
+			}
+		},
 		// No write timeout: WebSocket and SSE-style responses are long-lived.
 	}
 }
@@ -197,6 +206,9 @@ func (a *App) Start(ctx context.Context) {
 	go a.runTaskScheduler(ctx)
 	go a.runProxyTapCleanup(ctx)
 	go a.runShadowBackup(ctx)
+	go api.RunUsageSampler(ctx, api.Deps{Store: a.Store, Cfg: a.Cfg})
+	// Pre-build the Load dialog's transcript index so its first open is instant.
+	go a.JSONL.ListAllClaudeSessionsGlobal(nil)
 }
 
 // Close releases resources.
@@ -204,11 +216,41 @@ func (a *App) Close() error {
 	return a.Store.Close()
 }
 
+// noStoreAPI marks API responses uncacheable. Without it Chrome wrote every
+// polled JSON response to its HTTP cache, and concurrent GETs of the same URL
+// (the same poll from two components, or a retry) then queued on the cache
+// entry's lock — showing up as many requests "pending" ~20s at once while the
+// server had long since answered. Handlers that want caching (file downloads)
+// override the header.
+func noStoreAPI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		accessLog("REQ  %s %s %s", r.RemoteAddr, r.Method, r.URL.Path)
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		defer func() {
+			accessLog("DONE %s %s %s %d %s", r.RemoteAddr, r.Method, r.URL.Path, ww.Status(), time.Since(start).Round(time.Millisecond))
+		}()
+		var stall *time.Timer
+		if !isStreamingPath(r.URL.Path) {
+			stall = time.AfterFunc(stallDumpAfter, func() { dumpStall(r.Method + " " + r.URL.Path) })
+		}
 		next.ServeHTTP(ww, r)
+		if stall != nil {
+			stall.Stop()
+		}
+		if d := time.Since(start); d > slowRequestWarn && stall != nil {
+			slog.Warn("http: slow request", "method", r.Method, "path", r.URL.Path,
+				"status", ww.Status(), "dur", d.String())
+		}
 		slog.Debug("http",
 			"method", r.Method,
 			"path", r.URL.Path,

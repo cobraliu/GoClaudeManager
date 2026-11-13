@@ -95,6 +95,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // writeJSONStatus is an alias for writeJSON with an explicit status (readability).
 func writeJSONStatus(w http.ResponseWriter, status int, v any) { writeJSON(w, status, v) }
 
+// writeWarming answers a request whose transcript cache is still being built
+// (see jsonl.Cache.Ready): 202 + Retry-After, which the frontend's request
+// layer retries after the given delay instead of holding a connection open.
+func writeWarming(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "2")
+	writeJSONStatus(w, http.StatusAccepted, map[string]any{"warming": true})
+}
+
 // writeErr emits a FastAPI-style {"detail": ...} error body.
 func writeErr(w http.ResponseWriter, status int, detail string) {
 	writeJSON(w, status, map[string]string{"detail": detail})

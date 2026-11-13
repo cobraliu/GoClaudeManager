@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import type { SessionMeta, ScheduledTask } from "../api/sessionApi";
+import { TranscriptPicker } from "./TranscriptPicker";
 import { createTask, cancelTask, updateTaskCommand, renameSession, updateSessionIdentity } from "../api/sessionApi";
 import { usePageVisible } from "../hooks/usePageVisible";
 import scheduleIcon from "../assets/schedule.svg";
@@ -701,9 +702,9 @@ export function SessionCard({
           {idOpen && (
             <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3, padding: 7, background: "var(--bg-base)", border: "1px solid var(--border-subtle)", borderRadius: 4 }}>
               <label style={{ fontSize: 10, color: "var(--text-faint)" }}>resume_session_id</label>
-              <input value={idResume} onChange={(e) => setIdResume(e.target.value)} placeholder="(empty = clear)" spellCheck={false} style={idInputStyle} />
+              <TranscriptPicker sessionId={s.id} value={idResume} onChange={setIdResume} inputStyle={idInputStyle} />
               <label style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 2 }}>agent_session_id</label>
-              <input value={idAgent} onChange={(e) => setIdAgent(e.target.value)} placeholder="(empty = clear)" spellCheck={false} style={idInputStyle} />
+              <TranscriptPicker sessionId={s.id} value={idAgent} onChange={setIdAgent} inputStyle={idInputStyle} />
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                 <button onClick={saveIdentity} disabled={idSaving} style={{ fontSize: 11, background: "var(--accent-blue)", color: "#fff", padding: "2px 12px", borderRadius: 3, opacity: idSaving ? 0.5 : 1 }}>
                   {idSaving ? "Saving…" : "Save"}
