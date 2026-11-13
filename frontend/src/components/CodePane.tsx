@@ -19,6 +19,7 @@ import { CodeMirrorEditor, type CodeMirrorEditorHandle } from "./CodeMirrorEdito
 import { GitPanel, CommitDetailModal } from "./GitPanel";
 import { GitBranchPicker, GitPullButton } from "./GitBranchPicker";
 import { WorktreePanel } from "./WorktreePanel";
+import { RemoteFilesPanel } from "./RemoteFilesPanel";
 import { ConfigFormatToggle } from "./ConfigFormatToggle";
 import { ConfigCheckButton } from "./ConfigCheckButton";
 import { ConfigValidationBanner } from "./ConfigValidationBanner";
@@ -2564,7 +2565,7 @@ export function CodePane({
   const [selectedFromChanges, setSelectedFromChanges] = useState(true);
 
   // ── Toolbar / action state (ported from FileEditorModal) ───────────────────
-  type ToolForm = null | "search" | "upload" | "historySearch" | "worktrees";
+  type ToolForm = null | "search" | "upload" | "historySearch" | "worktrees" | "remote";
   const [toolForm, setToolForm] = useState<ToolForm>(null);
   // Worktree whose Changes / Commits are shown instead of the session's cwd
   // (picked in the Worktrees tool). Its files open read-only by absolute path.
@@ -2934,6 +2935,12 @@ export function CodePane({
   // column widens (RTL ellipsis shows more of the name as the picker grows).
   const [toolbarRef, toolbarWidth] = useResizeWidth<HTMLDivElement>();
 
+  const isAdminUser = localStorage.getItem("is_admin") === "true";
+  const renderRemoteFile = useCallback((data: FileData, path: string) =>
+    isMdFile(path)
+      ? <MarkdownViewer content={data.content} />
+      : <CodeViewer data={data} scrollToFirst={false} noDiff />, []);
+
   const secondRowItems = useMemo(() => [
     { key: "historySearch", label: "Git history by path", icon: "⏱", active: toolForm === "historySearch", onClick: () => setToolForm(toolForm === "historySearch" ? null : "historySearch") },
     { key: "search",    label: "Search files", icon: "🔍", active: toolForm === "search",    onClick: () => setToolForm(toolForm === "search" ? null : "search") },
@@ -2946,8 +2953,9 @@ export function CodePane({
     } },
     { key: "downloadCwd", label: dlLoading ? "Preparing zip…" : "Download cwd as zip", icon: "⤓", active: false, onClick: dlLoading ? () => {} : handleDownloadCwd },
     { key: "worktrees", label: "Git worktrees (parallel branches)", icon: "⑂", active: toolForm === "worktrees", onClick: () => setToolForm(toolForm === "worktrees" ? null : "worktrees") },
+    ...(isAdminUser ? [{ key: "remote", label: "Remote files over SSH (read-only)", icon: "🖧", active: toolForm === "remote", onClick: () => setToolForm(toolForm === "remote" ? null : "remote") }] : []),
     { key: "showHidden",  label: showHidden ? "Hide dot-prefixed files" : "Show dot-prefixed files", icon: ".*", active: showHidden, onClick: () => setShowHidden(!showHidden) },
-  ], [toolForm, dlLoading, handleDownloadCwd, showHidden, setShowHidden, pendingCreate, startCreateFromSelection]);
+  ], [toolForm, dlLoading, handleDownloadCwd, showHidden, setShowHidden, pendingCreate, startCreateFromSelection, isAdminUser]);
 
   const branchMaxWidth = useMemo(() => {
     if (toolbarWidth <= 0) return undefined;
@@ -3003,8 +3011,14 @@ export function CodePane({
             </div>
           )}
 
+          {toolForm === "remote" && (
+            <div style={{ borderBottom: "1px solid var(--bg-hover)", maxHeight: "55%", display: "flex", flexDirection: "column", flexShrink: 0, minHeight: 0 }}>
+              <RemoteFilesPanel showHidden={showHidden} renderFile={renderRemoteFile} />
+            </div>
+          )}
+
           {/* Inline forms */}
-          {toolForm && toolForm !== "worktrees" && (
+          {toolForm && toolForm !== "worktrees" && toolForm !== "remote" && (
             <div style={{ padding: "6px 8px 8px", borderBottom: "1px solid var(--bg-hover)", background: "var(--bg-base)", flexShrink: 0 }}>
               {toolForm === "search" && (
                 <input

@@ -82,6 +82,7 @@ func Router(d Deps) http.Handler {
 	r.Mount("/admin/terminals", AdminTerminalsRouter(d))
 	r.Mount("/admin/claude-login", ClaudeLoginRouter(d))
 	r.Mount("/admin/monitoring", AdminMonitoringRouter(d))
+	r.Mount("/remote", RemoteFilesRouter(d))
 
 	return r
 }

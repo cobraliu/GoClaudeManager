@@ -2078,6 +2078,39 @@ export function getCodeSubdirs(sessionId: string, path = ""): Promise<{ path: st
   return request(`/api/sessions/${sessionId}/code/dirs${qs}`);
 }
 
+export interface RemoteEntry {
+  name: string;
+  type: "dir" | "file";
+  size: number;
+  mtime: number;
+  link?: boolean;
+}
+
+/** Host aliases from the server's ~/.ssh/config (admin-only). */
+export function getRemoteHosts(): Promise<{ hosts: string[] }> {
+  return request(`/api/remote/hosts`);
+}
+
+/** List a directory on a remote host over SSH; empty path = remote home. */
+export function listRemoteDir(host: string, path = ""): Promise<{ host: string; path: string; entries: RemoteEntry[] }> {
+  const params = new URLSearchParams({ host, path });
+  return request(`/api/remote/list?${params}`);
+}
+
+/** Streaming URL for a remote video / audio / image (Range-capable; token in
+ *  the query because media elements can't send an Authorization header). */
+export function remoteMediaUrl(host: string, path: string): string {
+  const token = localStorage.getItem("token") || "";
+  const params = new URLSearchParams({ host, path, token });
+  return apiPath(`/api/remote/media?${params}`);
+}
+
+/** Read a remote file (absolute path), in the same shape as getCodeFile. */
+export function getRemoteFile(host: string, path: string): Promise<FileData> {
+  const params = new URLSearchParams({ host, path });
+  return request(`/api/remote/file?${params}`);
+}
+
 export function checkCodePathExists(sessionId: string, path: string): Promise<{ exists: boolean; is_file: boolean }> {
   return request(`/api/sessions/${sessionId}/code/exists?path=${encodeURIComponent(path)}`);
 }
