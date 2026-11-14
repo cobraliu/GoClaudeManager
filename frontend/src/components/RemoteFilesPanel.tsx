@@ -3,10 +3,9 @@
 // the file panel's toolbar as the "Remote" tool; files open in a modal viewer
 // whose body the parent renders (so it reuses CodePane's viewers).
 import { useCallback, useEffect, useState } from "react";
-import { getRemoteHosts, listRemoteDir, getRemoteFile, remoteMediaUrl, type RemoteEntry, type FileData } from "../api/sessionApi";
+import { getRemoteHosts, listRemoteDir, getRemoteFile, remoteMediaUrl, closeRemote, type RemoteEntry, type FileData } from "../api/sessionApi";
 import { FileIcon } from "./FileIcon";
 
-const LAST_HOST_KEY = "remoteFiles.host";
 const LAST_PATH_KEY = (host: string) => `remoteFiles.path.${host}`;
 
 function humanBytes(n: number): string {
@@ -51,7 +50,8 @@ export function RemoteFilesPanel({ showHidden, renderFile }: {
   renderFile: (data: FileData, path: string, host: string) => React.ReactNode;
 }) {
   const [hosts, setHosts] = useState<string[] | null>(null);
-  const [host, setHost] = useState<string>(() => localStorage.getItem(LAST_HOST_KEY) ?? "");
+  // Starts unselected every time: nothing connects until the user picks a host.
+  const [host, setHost] = useState("");
   const [path, setPath] = useState("");        // current absolute dir (as resolved by the server)
   const [pathInput, setPathInput] = useState("");
   const [entries, setEntries] = useState<RemoteEntry[] | null>(null);
@@ -72,18 +72,27 @@ export function RemoteFilesPanel({ showHidden, renderFile }: {
         setPath(r.path);
         setPathInput(r.path);
         setEntries(r.entries);
-        localStorage.setItem(LAST_HOST_KEY, h);
         localStorage.setItem(LAST_PATH_KEY(h), r.path);
       })
       .catch((e) => { setError(String(e?.message ?? e)); setPathInput(p); })
       .finally(() => setLoading(false));
   }, []);
 
-  // Connect to the remembered (or chosen) host at its last directory.
+  // Connect only once the user has picked a host (opening at that host's last
+  // directory). Switching host, unmounting (leaving the Remote tab or the
+  // session) or closing the page closes that host's SSH connection, so no ssh
+  // process lingers.
   useEffect(() => {
     if (!host) return;
     setEntries(null);
     load(host, localStorage.getItem(LAST_PATH_KEY(host)) ?? "");
+    const onHide = () => closeRemote(host);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      setOpened(null);
+      closeRemote(host);
+    };
   }, [host, load]);
 
   // Esc closes the viewer.

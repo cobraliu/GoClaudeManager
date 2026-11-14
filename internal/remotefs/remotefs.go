@@ -28,7 +28,9 @@ import (
 )
 
 // idleTimeout closes a host's connection after this long without a request.
-const idleTimeout = 10 * time.Minute
+// The UI closes connections explicitly when the Remote view is left (Close);
+// this is the backstop for a tab that vanished without saying so.
+const idleTimeout = 2 * time.Minute
 
 // hostRe is the set of host aliases we will pass to ssh. Refusing a leading
 // '-' (and anything outside this set) keeps a host value from being read as an
@@ -131,6 +133,34 @@ func (p *Pool) get(host string) (*sftp.Client, error) {
 	p.conns[host] = c
 	p.mu.Unlock()
 	return c.client, nil
+}
+
+// Close shuts the connection to host now (all hosts when host is ""), killing
+// its ssh process; open streams on it fail. The next request reconnects.
+func (p *Pool) Close(host string) {
+	p.mu.Lock()
+	var victims []*conn
+	for h, c := range p.conns {
+		if host == "" || h == host {
+			victims = append(victims, c)
+			delete(p.conns, h)
+		}
+	}
+	p.mu.Unlock()
+	for _, c := range victims {
+		c.close()
+	}
+}
+
+// Hosts currently connected (for tests / diagnostics).
+func (p *Pool) Connected() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, 0, len(p.conns))
+	for h := range p.conns {
+		out = append(out, h)
+	}
+	return out
 }
 
 // drop discards a host's connection (after an I/O error) so the next request

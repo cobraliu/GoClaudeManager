@@ -2978,10 +2978,6 @@ export function CodePane({
     try { localStorage.setItem("codepane.leftView", v); } catch { /* ignore */ }
   };
   const remoteView = isAdminUser && leftView === "remote";
-  // Keep the remote browser mounted once opened so switching back to Files and
-  // returning keeps its host, directory and connection.
-  const [remoteMounted, setRemoteMounted] = useState(remoteView);
-  useEffect(() => { if (remoteView) setRemoteMounted(true); }, [remoteView]);
   const renderRemoteFile = useCallback((data: FileData, path: string, host: string) =>
     <RemoteTextView key={host + ":" + path} data={data} path={path} host={host} />, []);
 
@@ -3065,8 +3061,10 @@ export function CodePane({
             ))}
           </div>
 
-          {remoteMounted && (
-            <div style={{ flex: 1, minHeight: 0, display: remoteView ? "flex" : "none", flexDirection: "column" }}>
+          {/* Mounted only while shown: leaving the tab unmounts it, which closes
+              its SSH connection; coming back starts with no host selected. */}
+          {remoteView && (
+            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
               <RemoteFilesPanel showHidden={showHidden} renderFile={renderRemoteFile} />
             </div>
           )}

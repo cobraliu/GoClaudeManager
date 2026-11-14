@@ -44,6 +44,17 @@ func RemoteFilesRouter(d Deps) http.Handler {
 		})
 		r.Get("/list", remoteList)
 		r.Get("/file", func(w http.ResponseWriter, r *http.Request) { remoteFile(d, w, r) })
+		// Close the SSH connection to ?host= (all hosts when omitted). Called
+		// when the Remote view is left, so no ssh process lingers.
+		r.Post("/close", func(w http.ResponseWriter, r *http.Request) {
+			host := r.URL.Query().Get("host")
+			if host != "" && !remotefs.ValidHost(host) {
+				writeErr(w, http.StatusBadRequest, "invalid host")
+				return
+			}
+			getRemotePool().Close(host)
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "connected": getRemotePool().Connected()})
+		})
 	})
 	return r
 }

@@ -2105,6 +2105,18 @@ export function remoteMediaUrl(host: string, path: string): string {
   return apiPath(`/api/remote/media?${params}`);
 }
 
+/** Close the server's SSH connection to host (all hosts when omitted).
+ *  keepalive so it still goes out from pagehide / unmount during navigation. */
+export function closeRemote(host?: string): void {
+  const params = host ? `?${new URLSearchParams({ host })}` : "";
+  const token = localStorage.getItem("token") || "";
+  fetch(apiPath(`/api/remote/close${params}`), {
+    method: "POST",
+    keepalive: true,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  }).catch(() => {});
+}
+
 /** Read a remote file (absolute path), in the same shape as getCodeFile. */
 export function getRemoteFile(host: string, path: string): Promise<FileData> {
   const params = new URLSearchParams({ host, path });
