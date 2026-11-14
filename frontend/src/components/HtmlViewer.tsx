@@ -44,10 +44,15 @@ function injectHtmlNav(html: string): string {
   return html + HTML_NAV_SCRIPT;
 }
 
-export function HtmlViewer({ sessionId, path, initialContent }: {
-  sessionId: string;
+export function HtmlViewer({ sessionId, path, initialContent, load, strict }: {
+  sessionId?: string;
   path: string;
   initialContent: string;
+  /** Reads a linked page; defaults to the session file API. */
+  load?: (path: string) => Promise<string>;
+  /** Opaque-origin sandbox (no allow-same-origin): for content that isn't the
+   *  user's own session files, e.g. files read off a remote host. */
+  strict?: boolean;
 }) {
   const [navStack, setNavStack] = useState<string[]>([path]);
   const currentPath = navStack[navStack.length - 1];
@@ -71,10 +76,12 @@ export function HtmlViewer({ sessionId, path, initialContent }: {
     let mounted = true;
     setContent(null);
     setLoadError(null);
-    readFile(sessionId, currentPath)
-      .then(r => { if (mounted) setContent(r.content); })
+    const read = load ?? ((p: string) => readFile(sessionId ?? "", p).then(r => r.content));
+    read(currentPath)
+      .then(c => { if (mounted) setContent(c); })
       .catch(e => { if (mounted) setLoadError(String(e)); });
     return () => { mounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, currentPath, path, initialContent]);
 
   useEffect(() => {
@@ -84,7 +91,9 @@ export function HtmlViewer({ sessionId, path, initialContent }: {
       if (d.type === "cm-html-extern" && typeof d.href === "string") {
         window.open(d.href, "_blank", "noopener,noreferrer");
       } else if (d.type === "cm-html-nav" && typeof d.href === "string") {
-        const resolved = resolveHtmlRel(htmlDirname(currentPath), d.href);
+        const rel = resolveHtmlRel(htmlDirname(currentPath), d.href);
+        // Absolute (remote) paths stay absolute; session paths are cwd-relative.
+        const resolved = rel && currentPath.startsWith("/") ? "/" + rel : rel;
         if (resolved) setNavStack(s => [...s, resolved]);
       }
     };
@@ -155,7 +164,7 @@ export function HtmlViewer({ sessionId, path, initialContent }: {
       ) : (
         <iframe
           key={currentPath}
-          sandbox="allow-scripts allow-same-origin"
+          sandbox={strict ? "allow-scripts" : "allow-scripts allow-same-origin"}
           srcDoc={injected}
           style={{ flex: 1, border: "none", background: "white", minHeight: 0 }}
           title={currentPath}

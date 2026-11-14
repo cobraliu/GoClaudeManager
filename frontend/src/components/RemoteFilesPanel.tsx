@@ -48,7 +48,7 @@ const iconBtn: React.CSSProperties = {
 export function RemoteFilesPanel({ showHidden, renderFile }: {
   showHidden: boolean;
   /** Renders an opened file's body inside the viewer modal. */
-  renderFile: (data: FileData, path: string) => React.ReactNode;
+  renderFile: (data: FileData, path: string, host: string) => React.ReactNode;
 }) {
   const [hosts, setHosts] = useState<string[] | null>(null);
   const [host, setHost] = useState<string>(() => localStorage.getItem(LAST_HOST_KEY) ?? "");
@@ -108,7 +108,7 @@ export function RemoteFilesPanel({ showHidden, renderFile }: {
   const visible = (entries ?? []).filter((e) => showHidden || !e.name.startsWith("."));
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
       <div style={{ padding: "6px 8px 4px", display: "flex", flexDirection: "column", gap: 4 }}>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <span style={{ fontSize: 10, color: "var(--text-muted)", flexShrink: 0 }}>SSH</span>
@@ -140,7 +140,7 @@ export function RemoteFilesPanel({ showHidden, renderFile }: {
       </div>
 
       {host && (
-        <div style={{ overflowY: "auto", minHeight: 0 }}>
+        <div style={{ overflowY: "auto", minHeight: 0, flex: 1 }}>
           {loading && entries === null ? (
             <div style={{ padding: "6px 12px", fontSize: 11, color: "var(--text-faint)" }}>Connecting…</div>
           ) : entries && visible.length === 0 ? (
@@ -212,7 +212,7 @@ export function RemoteFilesPanel({ showHidden, renderFile }: {
               ) : opened.data.is_binary ? (
                 <div style={{ padding: 16, fontSize: 12, color: "var(--text-faint)" }}>Binary file — preview not available.</div>
               ) : (
-                renderFile(opened.data, opened.path)
+                renderFile(opened.data, opened.path, host)
               )}
             </div>
           </div>

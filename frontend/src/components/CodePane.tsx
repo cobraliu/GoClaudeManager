@@ -9,7 +9,7 @@ import {
   searchFiles, createDir, uploadFiles, renameEntry, moveEntry, deleteEntry, writeFile, FileWriteConflictError,
   downloadFile, downloadDirZip, getDirInfo, readFile, mediaFileUrl,
   getFileGitLog, getFileGitShow, getFileGitDiff,
-  getCodeSubdirs, checkCodePathExists,
+  getCodeSubdirs, checkCodePathExists, getRemoteFile,
   type ChangedFile, type ChangedFilesWarning, type DirInfoResponse, type FileData, type FileEntry,
   type GitLogEntry,
 } from "../api/sessionApi";
@@ -1830,6 +1830,39 @@ function ViewerContent({
   return null;
 }
 
+// ── RemoteTextView — text file read over SSH (Remote files modal) ─────────
+// Markdown and HTML open rendered, with a SOURCE / PREVIEW toggle like local
+// files. Remote HTML runs in an opaque-origin sandbox: it comes from another
+// machine, so it must not reach this app's storage or API.
+
+function RemoteTextView({ data, path, host }: { data: FileData; path: string; host: string }) {
+  const md = isMdFile(path);
+  const html = isHtmlFile(path);
+  const [preview, setPreview] = useState(md || html);
+  const loadRemote = useCallback((p: string) => getRemoteFile(host, p).then(r => r.content), [host]);
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      {(md || html) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 10px", borderBottom: "1px solid var(--bg-hover)", flexShrink: 0, fontSize: 11, color: "var(--text-faint)" }}>
+          <span>{md ? "markdown" : "html"}</span>
+          <button
+            onClick={() => setPreview(v => !v)}
+            style={{
+              fontSize: 10, padding: "1px 7px", borderRadius: 3, cursor: "pointer",
+              background: preview ? "var(--bg-modal)" : "var(--bg-hover)",
+              color: preview ? "#60a5fa" : "var(--text-muted)",
+              border: `1px solid ${preview ? "#2563eb" : "var(--text-faintest)"}`,
+            }}
+          >{preview ? "PREVIEW" : "SOURCE"}</button>
+        </div>
+      )}
+      {preview && md ? <MarkdownViewer content={data.content} />
+        : preview && html ? <HtmlViewer path={path} initialContent={data.content} load={loadRemote} strict />
+        : <CodeViewer data={data} scrollToFirst={false} noDiff />}
+    </div>
+  );
+}
+
 // ── FileViewerPane — standalone file viewer (used in main layout) ─────────
 
 export function FileViewerPane({ sessionId, path, viewMode: initViewMode = "full", noDiff, onDirtyChange }: {
@@ -2565,7 +2598,7 @@ export function CodePane({
   const [selectedFromChanges, setSelectedFromChanges] = useState(true);
 
   // ── Toolbar / action state (ported from FileEditorModal) ───────────────────
-  type ToolForm = null | "search" | "upload" | "historySearch" | "worktrees" | "remote";
+  type ToolForm = null | "search" | "upload" | "historySearch" | "worktrees";
   const [toolForm, setToolForm] = useState<ToolForm>(null);
   // Worktree whose Changes / Commits are shown instead of the session's cwd
   // (picked in the Worktrees tool). Its files open read-only by absolute path.
@@ -2936,10 +2969,21 @@ export function CodePane({
   const [toolbarRef, toolbarWidth] = useResizeWidth<HTMLDivElement>();
 
   const isAdminUser = localStorage.getItem("is_admin") === "true";
-  const renderRemoteFile = useCallback((data: FileData, path: string) =>
-    isMdFile(path)
-      ? <MarkdownViewer content={data.content} />
-      : <CodeViewer data={data} scrollToFirst={false} noDiff />, []);
+  // Left panel: this session's files, or (admin) a remote host over SSH.
+  const [leftView, setLeftViewState] = useState<"files" | "remote">(() => {
+    try { return isAdminUser && localStorage.getItem("codepane.leftView") === "remote" ? "remote" : "files"; } catch { return "files"; }
+  });
+  const setLeftView = (v: "files" | "remote") => {
+    setLeftViewState(v);
+    try { localStorage.setItem("codepane.leftView", v); } catch { /* ignore */ }
+  };
+  const remoteView = isAdminUser && leftView === "remote";
+  // Keep the remote browser mounted once opened so switching back to Files and
+  // returning keeps its host, directory and connection.
+  const [remoteMounted, setRemoteMounted] = useState(remoteView);
+  useEffect(() => { if (remoteView) setRemoteMounted(true); }, [remoteView]);
+  const renderRemoteFile = useCallback((data: FileData, path: string, host: string) =>
+    <RemoteTextView key={host + ":" + path} data={data} path={path} host={host} />, []);
 
   const secondRowItems = useMemo(() => [
     { key: "historySearch", label: "Git history by path", icon: "⏱", active: toolForm === "historySearch", onClick: () => setToolForm(toolForm === "historySearch" ? null : "historySearch") },
@@ -2953,7 +2997,6 @@ export function CodePane({
     } },
     { key: "downloadCwd", label: dlLoading ? "Preparing zip…" : "Download cwd as zip", icon: "⤓", active: false, onClick: dlLoading ? () => {} : handleDownloadCwd },
     { key: "worktrees", label: "Git worktrees (parallel branches)", icon: "⑂", active: toolForm === "worktrees", onClick: () => setToolForm(toolForm === "worktrees" ? null : "worktrees") },
-    ...(isAdminUser ? [{ key: "remote", label: "Remote files over SSH (read-only)", icon: "🖧", active: toolForm === "remote", onClick: () => setToolForm(toolForm === "remote" ? null : "remote") }] : []),
     { key: "showHidden",  label: showHidden ? "Hide dot-prefixed files" : "Show dot-prefixed files", icon: ".*", active: showHidden, onClick: () => setShowHidden(!showHidden) },
   ], [toolForm, dlLoading, handleDownloadCwd, showHidden, setShowHidden, pendingCreate, startCreateFromSelection, isAdminUser]);
 
@@ -2976,7 +3019,23 @@ export function CodePane({
 
           {/* Row 1: Files label + branch picker + Pull + Git panel (Pull/Git adjacent, no gap) */}
           <div ref={toolbarRef} style={{ padding: "4px 6px 2px", display: "flex", alignItems: "center", gap: 3, flexShrink: 0, borderBottom: "1px solid var(--bg-hover)", minWidth: 0 }}>
-            <span style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", paddingLeft: 4, flexShrink: 0 }}>Files</span>
+            {(isAdminUser ? (["files", "remote"] as const) : (["files"] as const)).map(v => {
+              const on = (v === "remote") === remoteView;
+              return (
+                <button
+                  key={v}
+                  onClick={() => setLeftView(v)}
+                  title={v === "files" ? "This session's files" : "Remote files over SSH (read-only)"}
+                  style={{
+                    fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", flexShrink: 0,
+                    padding: "1px 5px", borderRadius: 3, cursor: isAdminUser ? "pointer" : "default",
+                    background: on && isAdminUser ? "var(--bg-hover)" : "transparent", border: "none",
+                    color: on ? "var(--text-bright)" : "var(--text-faint)",
+                  }}
+                >{v === "files" ? "Files" : "Remote"}</button>
+              );
+            })}
+            {!remoteView && (<>
             <button
               onClick={bumpFilesRefresh}
               title="Refresh file list"
@@ -2996,29 +3055,30 @@ export function CodePane({
                 <button title="Git panel" onClick={onGitClick} style={toolbarIconBtn(false)}>⎇</button>
               )}
             </div>
+            </>)}
           </div>
 
           {/* Row 2: history search + file management actions */}
           <div style={{ padding: "2px 6px 4px", display: "flex", alignItems: "center", gap: 2, flexShrink: 0, borderBottom: "1px solid var(--bg-hover)", minWidth: 0 }}>
-            {secondRowItems.map(it => (
+            {secondRowItems.filter(it => !remoteView || it.key === "showHidden").map(it => (
               <button key={it.key} title={it.label} onClick={it.onClick} style={toolbarIconBtn(it.active)}>{it.icon}</button>
             ))}
           </div>
 
+          {remoteMounted && (
+            <div style={{ flex: 1, minHeight: 0, display: remoteView ? "flex" : "none", flexDirection: "column" }}>
+              <RemoteFilesPanel showHidden={showHidden} renderFile={renderRemoteFile} />
+            </div>
+          )}
+          {!remoteView && (<>
           {toolForm === "worktrees" && (
             <div style={{ borderBottom: "1px solid var(--bg-hover)", maxHeight: "55%", overflowY: "auto", flexShrink: 0 }}>
               <WorktreePanel sessionId={sessionId} compact viewing={viewWtPath} onView={setViewWt} />
             </div>
           )}
 
-          {toolForm === "remote" && (
-            <div style={{ borderBottom: "1px solid var(--bg-hover)", maxHeight: "55%", display: "flex", flexDirection: "column", flexShrink: 0, minHeight: 0 }}>
-              <RemoteFilesPanel showHidden={showHidden} renderFile={renderRemoteFile} />
-            </div>
-          )}
-
           {/* Inline forms */}
-          {toolForm && toolForm !== "worktrees" && toolForm !== "remote" && (
+          {toolForm && toolForm !== "worktrees" && (
             <div style={{ padding: "6px 8px 8px", borderBottom: "1px solid var(--bg-hover)", background: "var(--bg-base)", flexShrink: 0 }}>
               {toolForm === "search" && (
                 <input
@@ -3174,6 +3234,7 @@ export function CodePane({
 
           {/* Recent commits (bottom) */}
           <RecentCommitsPanel sessionId={sessionId} wt={viewWtPath} />
+          </>)}
         </div>
       )}
 
