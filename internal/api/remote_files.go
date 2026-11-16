@@ -5,6 +5,7 @@ package api
 // OS user can reach with its ssh keys, on any host in ~/.ssh/config.
 
 import (
+	"net/url"
 	"context"
 	"net/http"
 	"path"
@@ -178,8 +179,9 @@ func remoteFile(d Deps, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// GET /api/remote/media?host=&path=<absolute>&token= — streams a remote file
-// (video / audio / image) with HTTP Range support so players can seek.
+// GET /api/remote/media?host=&path=<absolute>&token=[&download=1] — streams a
+// remote file (video / audio / image) with HTTP Range support so players can
+// seek; download=1 serves it as an attachment (the remote-file download relay).
 func remoteMedia(d Deps, w http.ResponseWriter, r *http.Request) {
 	id, err := d.Auth.VerifyToken(r.URL.Query().Get("token"))
 	if err != nil || id == nil || id.Username == "" {
@@ -211,5 +213,10 @@ func remoteMedia(d Deps, w http.ResponseWriter, r *http.Request) {
 	}
 	defer st.Close()
 	w.Header().Set("Cache-Control", "private, max-age=300")
+	if r.URL.Query().Get("download") == "1" {
+		// Relay as a download: the browser saves the file the server streams
+		// from the remote host over SFTP (Range still works, so resumable).
+		w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(path.Base(p)))
+	}
 	http.ServeContent(w, r, path.Base(p), st.Info.ModTime(), st)
 }

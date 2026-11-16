@@ -3,8 +3,9 @@
 // the file panel's toolbar as the "Remote" tool; files open in a modal viewer
 // whose body the parent renders (so it reuses CodePane's viewers).
 import { useCallback, useEffect, useState } from "react";
-import { getRemoteHosts, listRemoteDir, getRemoteFile, remoteMediaUrl, closeRemote, type RemoteEntry, type FileData } from "../api/sessionApi";
+import { getRemoteHosts, listRemoteDir, getRemoteFile, remoteMediaUrl, remoteDownloadUrl, closeRemote, type RemoteEntry, type FileData } from "../api/sessionApi";
 import { FileIcon } from "./FileIcon";
+import { copyTextDetect } from "../lib/copyText";
 
 const LAST_PATH_KEY = (host: string) => `remoteFiles.path.${host}`;
 
@@ -57,6 +58,7 @@ export function RemoteFilesPanel({ showHidden, renderFile }: {
   const [entries, setEntries] = useState<RemoteEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copyMsg, setCopyMsg] = useState("");
   const [opened, setOpened] = useState<{ path: string; data: FileData | null; media?: MediaKind; size?: number; error?: string } | null>(null);
 
   useEffect(() => {
@@ -197,6 +199,25 @@ export function RemoteFilesPanel({ showHidden, renderFile }: {
                   {" · read-only"}
                 </span>
               )}
+              {opened.data && !opened.data.is_binary && (
+                <button
+                  onClick={async () => {
+                    const ok = await copyTextDetect(opened.data!.content);
+                    setCopyMsg(ok ? "Copied ✓" : "Copy failed");
+                    setTimeout(() => setCopyMsg(""), 1500);
+                  }}
+                  title={opened.data.truncated
+                    ? `Copy the ${(opened.data.displayed_lines ?? 0).toLocaleString()} lines shown (file is truncated — download for the full file)`
+                    : "Copy the whole file"}
+                  style={iconBtn}
+                >{copyMsg || (opened.data.truncated ? "⧉ Copy shown" : "⧉ Copy")}</button>
+              )}
+              <a
+                href={remoteDownloadUrl(host, opened.path)}
+                download
+                title="Download (relayed by the server over SSH)"
+                style={{ ...iconBtn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+              >⤓ Download</a>
               <button onClick={() => setOpened(null)} title="Close (Esc)" style={iconBtn}>✕</button>
             </div>
             <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>

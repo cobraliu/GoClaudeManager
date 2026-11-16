@@ -2105,6 +2105,14 @@ export function remoteMediaUrl(host: string, path: string): string {
   return apiPath(`/api/remote/media?${params}`);
 }
 
+/** Download URL for a remote file: the server relays it from the host over
+ *  SFTP as an attachment. */
+export function remoteDownloadUrl(host: string, path: string): string {
+  const token = localStorage.getItem("token") || "";
+  const params = new URLSearchParams({ host, path, token, download: "1" });
+  return apiPath(`/api/remote/media?${params}`);
+}
+
 /** Close the server's SSH connection to host (all hosts when omitted).
  *  keepalive so it still goes out from pagehide / unmount during navigation. */
 export function closeRemote(host?: string): void {
